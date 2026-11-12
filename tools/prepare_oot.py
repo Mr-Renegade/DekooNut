@@ -371,9 +371,17 @@ def main():
     ap.add_argument('--no-lock', action='store_true', help='do not take /tmp/oot-game.lock: the build is CPU work in the '
                     "driver's compiler (GPU at 0%%), so it can run beside a game; only a timed comparison needs the lock")
     ap.add_argument('--until', choices=('census', 'lower', 'plan', 'translate', 'build'), default='build')
+    ap.add_argument('--build-only', action='store_true', help='only the last step, after a run with --until translate '
+                    '(setup shows the two as steps of their own)')
     a = ap.parse_args()
     build = a.build.resolve()
     t0 = time.monotonic()
+    if a.build_only:
+        if not (build / 'shader-prepared.bin').is_file():
+            sys.exit(f'{build / "shader-prepared.bin"} is missing: run with --until translate first')
+        oot_prepare(build, a.threads, a.xlate, dict(OOT_PREPARE_BUILD_ONLY='1'), a.slice, lock=not a.no_lock)
+        log(f'done in {time.monotonic() - t0:.0f} s')
+        return 0
     workers = min(a.threads or 6, 6)
     census(build, a.romfs.resolve(), workers)
     if a.until == 'census':

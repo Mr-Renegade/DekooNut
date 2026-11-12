@@ -49,7 +49,10 @@ file(GLOB AMPERE_HEADERS RELATIVE "${REPO}/runtime/third_party/eglantine/shader_
      "${REPO}/runtime/third_party/eglantine/shader_recompiler/frontend/ampere/*.h")
 file(MAKE_DIRECTORY "${AMPERE_OVERLAY}/ampere")
 foreach(header ${AMPERE_HEADERS})
-  file(CREATE_LINK "${REPO}/runtime/third_party/eglantine/shader_recompiler/frontend/ampere/${header}" "${AMPERE_OVERLAY}/ampere/${header}" SYMBOLIC)
+  # COPY_ON_ERROR: Windows lets only an elevated process (or Developer Mode) make symbolic links. A copy is renewed
+  # when the header changes, through the configure dependency.
+  file(CREATE_LINK "${REPO}/runtime/third_party/eglantine/shader_recompiler/frontend/ampere/${header}" "${AMPERE_OVERLAY}/ampere/${header}" COPY_ON_ERROR SYMBOLIC)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${REPO}/runtime/third_party/eglantine/shader_recompiler/frontend/ampere/${header}")
 endforeach()
 target_include_directories(mesh_recompiler PUBLIC include "${CMAKE_BINARY_DIR}/overlay" "${LICHII_SOURCE}/src" "${BOOST_HEADERS}")
 target_link_libraries(mesh_recompiler PUBLIC mesh_sirit fmt::fmt)

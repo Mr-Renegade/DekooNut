@@ -56,6 +56,9 @@ unsigned gfx_window_dpi(void);                 // the window's DPI (96 at 100% d
 // The present mode the swapchain got, as a present-mode name ("fifo" when mailbox is missing); "" before the first
 // swapchain. Any thread.
 const char *gfx_window_present_mode(void);
+// 1 when this build and PC can run NVIDIA DLSS (vk_dlss.c: an NVIDIA card, the model library beside the program),
+// whatever the dlss setting says; the menu shows the setting only then. Set once the Vulkan device is up.
+int vk_dlss_available(void);
 
 #ifdef __cplusplus
 }

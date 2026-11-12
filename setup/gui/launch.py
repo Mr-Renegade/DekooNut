@@ -41,7 +41,8 @@ def say(text, command=''):
 
 def build(say=print):
     """The window's program, built when a source is newer. None (after saying why) when it cannot be built."""
-    inputs = SOURCES + list(HERE.glob('imgui/*.h')) + list(IMGUI.glob('*.h')) + [Path(__file__)]   # its flags are here
+    inputs = (SOURCES + list(HERE.glob('imgui/*.h')) + list(IMGUI.glob('*.h')) + [Path(__file__)] +   # its flags are here
+              [HERE / 'window.rc', HERE / 'window.manifest'])
     if EXE.is_file() and EXE.stat().st_mtime >= max(p.stat().st_mtime for p in inputs):
         return EXE
     env = host.tool_env()
@@ -74,6 +75,13 @@ def build(say=print):
     if any(job.wait() for job in jobs):
         say('The setup window could not be compiled; the lines above say why.')
         return None
+    if host.WIN:   # the manifest: without it Windows takes "dekoonut-setup.exe" for an installer (error 740)
+        res = OUT / 'window.res'
+        if subprocess.run([host.which('windres', env), str(HERE / 'window.rc'), '-O', 'coff', '-o', str(res)],
+                          env=env).returncode:
+            say('The setup window could not be compiled; the lines above say why.')
+            return None
+        objects.append(res)
     if subprocess.run([clang, *map(str, objects), '-o', str(EXE), *flags[1]], env=host.tool_env()).returncode:
         say('The setup window could not be linked; the lines above say why.')
         return None

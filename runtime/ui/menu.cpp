@@ -605,6 +605,10 @@ static void tab_screen(float scale) {
     opt_group(UI_MENU_GRAPHICS);
     row_output_res();
     row_render_scale();
+    if (vk_dlss_available()) {   // an NVIDIA card with the model library; the names follow the setting's on|fast|off
+        static const UiTextId dlss[] = {UI_MENU_DLSS_ON, UI_MENU_DLSS_FAST, UI_MENU_DLSS_OFF};
+        opt_choice("OOT_DLSS", UI_MENU_DLSS, dlss, 3, UI_MENU_DLSS_DESC);
+    }
     static const UiTextId up[] = {UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR};
     opt_choice("OOT_UPSCALER", UI_MENU_UPSCALER, up, 2, UI_MENU_UPSCALER_DESC);
     opt_slider("OOT_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");

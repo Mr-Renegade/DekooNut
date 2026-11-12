@@ -294,8 +294,7 @@ class Tools(Step):
             fetch.win_tools(ctx, run)
         fetch.venv312(ctx, run)
         fetch.dotnet(ctx, run)
-        if not WIN:
-            fetch.dlss(ctx, run)
+        fetch.dlss(ctx, run)
 
 
 class Icon(Step):
@@ -494,7 +493,7 @@ class Game(Step):
 
     def current(self, ctx, record):
         return (ctx.dest / OOT).is_file() and (ctx.dest / 'romfs-index.bin').is_file() and \
-            (WIN or any((ctx.dest / 'dlss').glob('libnvidia-ngx-dlss.so.*')))
+            any((ctx.dest / 'dlss').glob('nvngx_dlss.dll' if WIN else 'libnvidia-ngx-dlss.so.*'))
 
     def run(self, ctx):
         out = ctx.work / 'build'
@@ -510,70 +509,87 @@ class Game(Step):
         if WIN:
             for dll in out.glob('*.dll'):   # the libraries the build put beside the program
                 install(dll, ctx.dest / dll.name)
-        else:
-            model = fetch.dlss_model()
-            install(model, ctx.dest / 'dlss' / model.name)
+        model = fetch.dlss_model()
+        install(model, ctx.dest / 'dlss' / model.name)
         return {'sha256': file_sha256(ctx.dest / OOT)}
 
     @staticmethod
     def system_args():
         tc = ROOT / 'toolchain'
-        return ['--toolchain', tc / 'llvm-mingw', '--deps', tc / 'deps-mingw', '--ninja', tc / 'bin' / 'ninja.exe'] \
-            if WIN else ['--dlss-sdk', fetch.DLSS_DIR]
+        win = ['--toolchain', tc / 'llvm-mingw', '--deps', tc / 'deps-mingw', '--ninja', tc / 'bin' / 'ninja.exe']
+        return (win if WIN else []) + ['--dlss-sdk', fetch.DLSS_DIR]
 
 
-class Shaders(Step):
-    id, title = 'shaders', 'Preparing the shaders'
+def prepare_shaders(ctx, phase, pattern, text):
+    """tools/prepare_oot.py for one of its two long phases, each a step of its own so that the window's progress
+    never starts again in the middle of a step: phase is its option (--until translate, --build-only). pattern finds
+    the game's own progress lines of that phase in prepare.log, the file the tool sends them to."""
+    dest = ctx.dest
+    threads = max(2, min(6, (os.cpu_count() or 4) - 2))
+    cmd = [host.python314(), ROOT / 'tools' / 'prepare_oot.py', dest, '--romfs', dest / 'romfs',
+           '--xlate', dest / XLATE, '--threads', threads, '--no-lock', '--slice', 0, *phase]
+    ram = host.memory_bytes()
+    if shutil.which('systemd-run') and ram:   # a memory cap: the driver's compiler can take a lot
+        cap = max(6, min(14, ram * 7 // 10 // GiB))
+        cmd = ['systemd-run', '--user', '--scope', '--quiet', '-p', f'MemoryMax={cap}G', '-p',
+               'MemorySwapMax=2G', '-p', 'OOMPolicy=continue'] + cmd
+    env = host.tool_env()
+    env.update(play_env(dest))
+    if not WIN:
+        (dest / 'nvcache').mkdir(exist_ok=True)
+    log = dest / 'prepare.log'
+    done = threading.Event()
 
-    def key(self, ctx):
-        return digest(ctx.keys['game'], ctx.keys['translator'],
-                      tree_digest(ROOT / 'tools' / 'prepare_oot.py', ROOT / 'tools' / 'shader_census.py'))
-
-    def current(self, ctx, record):
-        return (ctx.dest / 'seed-answers.bin').is_file() and (ctx.dest / 'shader-cache').is_dir()
-
-    def run(self, ctx):
-        dest = ctx.dest
-        threads = max(2, min(6, (os.cpu_count() or 4) - 2))
-        cmd = [host.python314(), ROOT / 'tools' / 'prepare_oot.py', dest, '--romfs', dest / 'romfs',
-               '--xlate', dest / XLATE, '--threads', threads, '--no-lock', '--slice', 0]
-        ram = host.memory_bytes()
-        if shutil.which('systemd-run') and ram:   # a memory cap: the driver's compiler can take a lot
-            cap = max(6, min(14, ram * 7 // 10 // GiB))
-            cmd = ['systemd-run', '--user', '--scope', '--quiet', '-p', f'MemoryMax={cap}G', '-p',
-                   'MemorySwapMax=2G', '-p', 'OOMPolicy=continue'] + cmd
-        env = host.tool_env()
-        env.update(play_env(dest))
-        if not WIN:
-            (dest / 'nvcache').mkdir(exist_ok=True)
-        done = threading.Event()
-        watcher = threading.Thread(target=self.watch, args=(ctx, dest / 'prepare.log', done), daemon=True)
-        watcher.start()
-        try:
-            run(ctx, cmd, env=env, on_line=lambda line: ctx.progress(line.split('] ', 1)[-1][:90]),
-                what='The shader preparation')
-        finally:
-            done.set()
-            watcher.join()
-
-    @staticmethod
-    def watch(ctx, log, done):
-        """The game's own progress lines of this phase, from the file the tool sends them to."""
+    def watch():
         pos = log.stat().st_size if log.is_file() else 0
         while not done.wait(1):
             if not log.is_file():
                 continue
             with open(log, 'rb') as f:
                 f.seek(pos)
-                text = f.read().decode(errors='replace')
+                lines = f.read().decode(errors='replace').splitlines()
                 pos = f.tell()
-            for line in text.splitlines():
-                m = re.search(r'prepare: (\d+) of (\d+) pairs', line)
+            for line in lines:
+                m = re.search(pattern, line)
                 if m:
-                    ctx.progress('Translating', int(m.group(1)), int(m.group(2)))
-                m = re.search(r'prepare-shaders: built (\d+) of (\d+)', line)
-                if m:
-                    ctx.progress('Compiling for this graphics card', int(m.group(1)), int(m.group(2)))
+                    ctx.progress(text, int(m.group(1)), int(m.group(2)))
+
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
+    try:
+        run(ctx, cmd, env=env, on_line=lambda line: ctx.progress(line.split('] ', 1)[-1][:90]),
+            what='The shader preparation')
+    finally:
+        done.set()
+        watcher.join()
+
+
+class Translate(Step):
+    id, title = 'translate', 'Translating the shaders'
+
+    def key(self, ctx):
+        return digest(ctx.keys['game'], ctx.keys['translator'],
+                      tree_digest(ROOT / 'tools' / 'prepare_oot.py', ROOT / 'tools' / 'shader_census.py'))
+
+    def current(self, ctx, record):
+        return (ctx.dest / 'seed-answers.bin').is_file() and (ctx.dest / 'shader-prepared.bin').is_file() and \
+            (ctx.dest / 'shader-cache').is_dir()
+
+    def run(self, ctx):
+        prepare_shaders(ctx, ['--until', 'translate'], r'prepare: (\d+) of (\d+) pairs', 'Translating')
+
+
+class Shaders(Step):
+    id, title = 'shaders', 'Compiling the shaders for this graphics card'
+
+    def key(self, ctx):
+        return digest(ctx.keys['translate'], 'build')
+
+    def current(self, ctx, record):
+        return (ctx.dest / 'shader-built.log').is_file()
+
+    def run(self, ctx):
+        prepare_shaders(ctx, ['--build-only'], r'prepare-shaders: built (\d+) of (\d+)', 'Compiling')
 
 
 class Gamedata(Step):
@@ -630,6 +646,11 @@ class Finish(Step):
         launcher.chmod(0o755)
         if not ctx.options.no_menu_entry:
             (self.shortcut if WIN else self.menu_entry)(ctx, launcher)
+        if getattr(ctx.options, 'desktop_entry', False):   # asked for: --desktop-entry, the window's tick box
+            if WIN:
+                self.shortcut(ctx, launcher, desktop=True)
+            else:
+                ctx.reporter.warning('A desktop shortcut is written on Windows only for now.')
 
     @staticmethod
     def ini(ctx, keys):
@@ -649,21 +670,24 @@ class Finish(Step):
         path.write_text(text, encoding='utf-8')
 
     @staticmethod
-    def shortcut(ctx, launcher):
-        """The Start menu entry. Its icon: dekoonut.ico from the game's picture (the icon step), else the program's."""
+    def shortcut(ctx, launcher, desktop=False):
+        """The Start menu entry, or with desktop the same shortcut on the desktop (wherever Windows keeps that folder:
+        it may be redirected). Its icon: dekoonut.ico from the game's picture (the icon step), else the program's."""
         icon = ctx.dest / 'dekoonut.ico'
         script = (
-            "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:LNK); "
-            "if ((Test-Path $env:LNK) -and $s.Description -ne $env:MARK) { exit 3 }; "
+            "$lnk = if ($env:LNK) { $env:LNK } else { Join-Path ([Environment]::GetFolderPath('Desktop')) 'DekooNut.lnk' }; "
+            "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk); "
+            "if ((Test-Path $lnk) -and $s.Description -ne $env:MARK) { exit 3 }; "
             "$s.TargetPath = $env:TARGET; $s.WorkingDirectory = $env:WORKDIR; $s.Description = $env:MARK; "
             "$s.WindowStyle = 7; $s.IconLocation = $env:ICON; $s.Save()")
-        env = dict(os.environ, LNK=str(MENU_ENTRY), TARGET=str(launcher), WORKDIR=str(ctx.dest),
+        env = dict(os.environ, LNK='' if desktop else str(MENU_ENTRY), TARGET=str(launcher), WORKDIR=str(ctx.dest),
                    MARK='DekooNut (written by setup)', ICON=str(icon if icon.is_file() else ctx.dest / OOT))
         r = subprocess.run(['powershell', '-NoProfile', '-Command', script], env=env, capture_output=True, text=True)
+        what, where = ('The desktop shortcut', 'DekooNut on the desktop') if desktop else ('The Start menu entry', MENU_ENTRY)
         if r.returncode == 3:
-            ctx.reporter.warning(f'{MENU_ENTRY} exists and was not written by setup: it is left as it is.')
+            ctx.reporter.warning(f'{where} exists and was not written by setup: it is left as it is.')
         elif r.returncode:
-            ctx.reporter.warning('The Start menu entry could not be written: ' + (r.stderr.strip()[:200] or 'unknown'))
+            ctx.reporter.warning(f'{what} could not be written: ' + (r.stderr.strip()[:200] or 'unknown'))
 
     @staticmethod
     def menu_entry(ctx, launcher):
@@ -679,5 +703,5 @@ class Finish(Step):
 
 
 def all_steps():
-    return [Check(), Tools(), Icon(), Exefs(), Romfs(), Generate(), Translator(), Mesh(), Game(), Shaders(),
-            Gamedata(), Finish()]
+    return [Check(), Tools(), Icon(), Exefs(), Romfs(), Generate(), Translator(), Mesh(), Game(), Translate(),
+            Shaders(), Gamedata(), Finish()]

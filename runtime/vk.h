@@ -58,6 +58,7 @@ void vk_caps_init(VkCtx *c);                          // after it: pretend limit
 // vk_dlss.c: NVIDIA DLSS Super Resolution in place of the game's upscale.
 typedef struct { VkImage image; VkImageView view; VkFormat format; uint32_t w, h; VkImageAspectFlags aspect; } VkDlssImage;
 int vk_dlss_on(void);                       // NGX is up and has SuperSampling
+int vk_dlss_available(void);                // an NVIDIA card and the model library are there: the menu shows the setting
 void vk_dlss_instance_ext(const char **ext, uint32_t *n, uint32_t cap);   // before vkCreateInstance
 void vk_dlss_device_ext(const char **ext, uint32_t *n, uint32_t cap, const VkExtensionProperties *ep, uint32_t ne);
 void vk_dlss_init(VkCtx *c);                // after the device exists

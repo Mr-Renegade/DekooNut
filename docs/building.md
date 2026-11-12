@@ -59,8 +59,8 @@ The full steps from your own copy of the game to a running build. The short form
   `exefs/`, `romfs/`, `dlss/`, the game-data pack of the chosen quality level, `oot.ini`, `profile/` with the saves,
   the shader caches), the launcher
   `dekoonut` and `dekoonut.png`: the game's own Deku Nut icon, read from your game data
-  (`tools/game_icon.py`). The applications menu gets an entry "DekooNut" (`--no-menu-entry` leaves it out). About
-  36 GB.
+  (`tools/game_icon.py`). The applications menu gets an entry "DekooNut" (`--no-menu-entry` leaves it out); on
+  Windows `--desktop-entry`, or the window's tick box, also puts the shortcut on the desktop. About 36 GB.
 - Steps are recorded in `oot-install.json`; a step whose inputs did not change is skipped, so a stopped setup goes
   on where it was, and after an update of this repository only what changed is rebuilt (the generated C and the
   objects stay in the folder's `.setup/`). Logs: `.setup/logs/`.

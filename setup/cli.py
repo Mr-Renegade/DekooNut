@@ -36,10 +36,11 @@ def remembered():
         return {}
 
 
-def remember(game, dest, level):
+def remember(game, dest, level, desktop=False):
     try:
         REMEMBER.parent.mkdir(parents=True, exist_ok=True)
-        REMEMBER.write_text(json.dumps({'game': game, 'dest': dest, 'quality': level}), encoding='utf-8')
+        REMEMBER.write_text(json.dumps({'game': game, 'dest': dest, 'quality': level, 'desktop': bool(desktop)}),
+                            encoding='utf-8')
     except OSError:
         pass
 
@@ -64,6 +65,7 @@ def info(display):
         'install_command': host.install_command(missing) if missing else '',
         'can_install': bool(host.install_argv(missing, graphical=True)),
         'gpu': cards[0][0] if cards else '',
+        'desktop': bool(last.get('desktop')),   # the window's tick box as it was left
     }, ensure_ascii=False))
     return 0
 
@@ -167,6 +169,7 @@ def main(argv=None):
                     help='quality level (default: the one suggested for this PC; --check names it)')
     ap.add_argument('--jobs', type=int, help='parallel compiles (default: by CPU count and memory)')
     ap.add_argument('--no-menu-entry', action='store_true', help='do not add DekooNut to the applications menu')
+    ap.add_argument('--desktop-entry', action='store_true', help='also put a DekooNut shortcut on the desktop (Windows)')
     ap.add_argument('--json', action='store_true', help='progress as JSON lines (what the window reads)')
     ap.add_argument('--check', action='store_true', help='only say what this PC lacks')
     ap.add_argument('--install-packages', action='store_true',
@@ -218,7 +221,7 @@ def main(argv=None):
         except KeyboardInterrupt:   # a second Ctrl+C while the first is handled
             result = 'cancelled'
         if result == 'ok':
-            remember(ctx.state.get('game', ''), str(dest), ctx.state.get('quality', ''))
+            remember(ctx.state.get('game', ''), str(dest), ctx.state.get('quality', ''), args.desktop_entry)
     rep.emit('end', result=result, seconds=round(rep.elapsed(), 1),
              **({'play': str(dest / LAUNCHER)} if result == 'ok' else {}))
     rep.close()

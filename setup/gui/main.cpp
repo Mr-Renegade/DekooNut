@@ -122,6 +122,12 @@ struct Proc {
         SDL_SetPointerProperty(props, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void *)argv.data());
         SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER, SDL_PROCESS_STDIO_APP);
         SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDIN_NUMBER, SDL_PROCESS_STDIO_NULL);
+#ifdef _WIN32
+        // The window has no console, so Windows would open a console window for the backend (a console program) and
+        // keep it open for the whole build. "Background" is CREATE_NO_WINDOW there: a hidden console, which the tools
+        // the backend starts inherit. SDL then reports exit code 0 for it; the events say how a build ended.
+        SDL_SetBooleanProperty(props, SDL_PROP_PROCESS_CREATE_BACKGROUND_BOOLEAN, true);
+#endif
         p = SDL_CreateProcessWithProperties(props);
         SDL_DestroyProperties(props);
         buf.clear();
@@ -162,6 +168,7 @@ static struct App {
 
     // from --info
     bool info_ready = false, installed = false, can_install = false;
+    bool desktop = false, desktop_known = false;   // the tick box "a shortcut on the desktop" (Windows)
     std::string version, game, dest, gpu, install_command;
     std::vector<std::string> missing;
     std::vector<Level> levels;
@@ -201,7 +208,8 @@ static float g_font_scale;
 #define MENU "applications menu"
 #endif
 
-static const float STEP_WEIGHT[] = {1, 3, 1, 1, 12, 10, 8, 6, 30, 25, 1, 1};
+// By step (setup/steps.py all_steps): ..., the game, translating the shaders, compiling them, the level, finishing.
+static const float STEP_WEIGHT[] = {1, 3, 1, 1, 12, 10, 8, 6, 30, 12, 25, 1, 1};
 
 static ImU32 C(float r, float g, float b, float a = 1) { return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a)); }
 static const ImVec4 GOLD(0.96f, 0.74f, 0.28f, 1), TEXT(0.96f, 0.92f, 0.84f, 1), DIM(0.66f, 0.58f, 0.47f, 1);
@@ -245,6 +253,7 @@ static void take_info(const std::string &line) {
     if (A.game.empty()) A.game = j["game"].s;
     if (A.dest.empty()) A.dest = j["dest"].s;
     A.gpu = j["gpu"].s;
+    if (!A.desktop_known) A.desktop = j["desktop"].b, A.desktop_known = true;   // later answers leave the tick as it is
     A.installed = j["installed"].b;
     A.install_command = j["install_command"].s;
     A.can_install = j["can_install"].b;
@@ -287,6 +296,7 @@ static void start_build() {
     }
     std::vector<std::string> args = backend_args({"--json", "--game", A.game, "--dest", A.dest});
     if (!A.levels.empty()) args.push_back("--quality"), args.push_back(A.levels[A.level].id);
+    if (A.desktop) args.push_back("--desktop-entry");
     start_run(args);
 }
 
@@ -407,8 +417,8 @@ static void take_picks() {
     SDL_UnlockMutex(g_pick_lock);
 }
 
-// ---- the scene: the top of a great stump, the nut at the heart of its rings. The twelve rings around the nut are
-// the build's steps: a finished step's ring glows, the running one fills clockwise.
+// ---- the scene: the top of a great stump, the nut at the heart of its rings. The rings around the nut are the
+// build's steps, one each: a finished step's ring glows, the running one fills clockwise.
 
 static const float TAU = 6.2831853f;
 
@@ -443,7 +453,7 @@ static void scene(ImDrawList *d, float W, float H, float s, float t) {
     }
     // the step rings
     float r0 = 212 * s, gap = 25 * s;
-    int count = A.steps.empty() ? 12 : (int)A.steps.size();
+    int count = A.steps.empty() ? (int)SDL_arraysize(STEP_WEIGHT) : (int)A.steps.size();   // before a build: as many as it has
     for (int k = 0; k < count; k++) {
         float r = r0 + k * gap;
         int st = A.steps.empty() ? (A.installed ? 2 : 0) : A.steps[k].state;
@@ -689,7 +699,27 @@ static void view_form(float w, float s) {
 
     heading(2, "WHERE TO INSTALL (ABOUT 36 GB)", have_dest, s);
     if (field("##dest", A.dest, "Choose a folder", w, s)) SDL_ShowOpenFolderDialog(picked_dest, NULL, g_win, NULL, false);
+#ifdef _WIN32
+    // The Start menu entry is always written; the desktop is the player's, so a shortcut there is asked for.
+    ImGui::PushFont(F_SMALL);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 5 * s);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.5f * s);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3 * s, 3 * s));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemInnerSpacing, ImVec2(10 * s, 0));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(1, 0.9f, 0.75f, 0.06f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(1, 0.9f, 0.75f, 0.14f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(1, 0.9f, 0.75f, 0.20f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.96f, 0.74f, 0.28f, 0.40f));
+    ImGui::PushStyleColor(ImGuiCol_CheckMark, GOLD);
+    ImGui::PushStyleColor(ImGuiCol_Text, A.desktop ? TEXT : DIM);
+    ImGui::Checkbox("Also put a shortcut on the desktop", &A.desktop);
+    ImGui::PopStyleColor(6);
+    ImGui::PopStyleVar(4);
+    ImGui::PopFont();
+    gap(8 * s);
+#else
     gap(22 * s);
+#endif
 
     heading(3, "QUALITY", !A.levels.empty(), s);
     for (size_t i = 0; i < A.levels.size(); i++) {
@@ -746,7 +776,7 @@ static void view_build(float w, float s, float t) {
     snprintf(info, sizeof info, "Step %d of %d   ·   %s", A.cur + 1, (int)A.steps.size(), duration(SDL_GetTicks() - A.started).c_str());
     wrapped(F_BODY, DIM, A.progress.empty() ? std::string(A.steps.empty() ? "" : info) : A.progress + "   ·   " + info, w);
     gap(14 * s);
-    float list_h = 12 * 33 * s;
+    float list_h = (A.steps.size() > 12 ? A.steps.size() : 12) * 33 * s;
     if (A.show_log) {
         ImGui::PushFont(F_MONO);
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0.45f));
@@ -835,7 +865,7 @@ static void view_done(float w, float s) {
     ImGui::TextColored(TEXT, "Ready to play");
     ImGui::PopFont();
     wrapped(F_BODY, DIM, (A.ended - A.started < 3000 ? std::string("Everything was up to date. ") : "Built in " + duration(A.ended - A.started) + ". ") +
-                             "DekooNut is in your " MENU ", with the icon from your game.", w);
+                             "DekooNut is in your " MENU + (A.desktop ? " and on your desktop" : "") + ", with the icon from your game.", w);
     for (auto &warn : A.warnings) wrapped(F_SMALL, ImVec4(0.95f, 0.72f, 0.42f, 1), warn, w);
     gap(26 * s);
     if (button("Play", w, s, true, true)) play();
@@ -848,10 +878,13 @@ static void view_done(float w, float s) {
 }
 
 static void column(float W, float H, float s, float t) {
-    float x = W * 0.615f, w = W * 0.335f, y = H * (A.card == CARD_NONE ? 0.095f : 0.13f);
-    ImGui::SetNextWindowPos(ImVec2(x, y));
-    ImGui::SetNextWindowSize(ImVec2(w, H - y - 20 * s));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    float x = floorf(W * 0.615f), w = floorf(W * 0.335f), y = H * (A.card == CARD_NONE ? 0.095f : 0.13f);
+    // The window clips at its edge (and a pixel inside it): a margin keeps the outline of a full-width row of
+    // buttons whole. The content still starts at x and is w wide.
+    float m = ceilf(4 * s);
+    ImGui::SetNextWindowPos(ImVec2(x - m, y));
+    ImGui::SetNextWindowSize(ImVec2(w + 2 * m, H - y - 20 * s));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(m, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 9 * s));
     ImGui::Begin("##column", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoSavedSettings);
     if (A.card == CARD_NONE) view_form(w, s);

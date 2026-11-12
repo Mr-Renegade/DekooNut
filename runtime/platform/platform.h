@@ -78,6 +78,7 @@ uint64_t plat_now_ns(void);               // monotonic, high resolution, arbitra
 uint64_t plat_counter(void);              // the OS's raw monotonic counter (QPC on Windows), plat_counter_hz per second
 uint64_t plat_counter_hz(void);
 void plat_timer_1ms(void);                // asks the OS for timed waits accurate to 1 ms or better (call before threads)
+void plat_output_init(void);              // gives stdout and stderr somewhere to go (Windows: oot.exe has no console of its own)
 // t * num / den for a fixed num / den without a 128-bit division per call: t * q + (t * f >> 64), q = num / den, f = (num % den) * 2^64 / den.
 // Monotonic in t and at most one below the exact quotient.
 typedef struct { uint64_t q, f; } PlatScale;
