@@ -453,7 +453,7 @@ static void scene(ImDrawList *d, float W, float H, float s, float t) {
     }
     // the step rings
     float r0 = 212 * s, gap = 25 * s;
-    int count = A.steps.empty() ? 12 : (int)A.steps.size();
+    int count = A.steps.empty() ? (int)SDL_arraysize(STEP_WEIGHT) : (int)A.steps.size();   // before a build: as many as it has
     for (int k = 0; k < count; k++) {
         float r = r0 + k * gap;
         int st = A.steps.empty() ? (A.installed ? 2 : 0) : A.steps[k].state;
