@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Embedded by launcher.rc. Without a requestedExecutionLevel Windows takes a program whose name holds "Setup" for an
+     installer: a double click asks for administrator rights and the whole set-up then runs elevated. -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+</assembly>

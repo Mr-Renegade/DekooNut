@@ -58,7 +58,9 @@ def main():
     window = work / 'dekoonut-setup.exe'
     # No path of the building PC in the programs (asserts carry their file's name).
     maps = [f'-ffile-prefix-map={ROOT}=.', f'-ffile-prefix-map={cc.parent.parent}=llvm-mingw']
-    run(cxx, '-std=c++17', '-O2', *maps, '-I', IMGUI, '-I', GUI, '-I', deps / 'include', *WINDOW, '-o', window,
+    window_res = work / 'window.res'   # its manifest, as setup/gui/launch.py embeds it
+    run(windres, GUI / 'window.rc', '-O', 'coff', '-o', window_res)
+    run(cxx, '-std=c++17', '-O2', *maps, '-I', IMGUI, '-I', GUI, '-I', deps / 'include', *WINDOW, window_res, '-o', window,
         deps / 'lib' / 'libSDL3.dll.a', '-static', '-mwindows')
     res = work / 'launcher.res'
     run(windres, ROOT / 'setup' / 'win' / 'launcher.rc', '-O', 'coff', '-o', res)

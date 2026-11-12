@@ -122,6 +122,12 @@ struct Proc {
         SDL_SetPointerProperty(props, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void *)argv.data());
         SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER, SDL_PROCESS_STDIO_APP);
         SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDIN_NUMBER, SDL_PROCESS_STDIO_NULL);
+#ifdef _WIN32
+        // The window has no console, so Windows would open a console window for the backend (a console program) and
+        // keep it open for the whole build. "Background" is CREATE_NO_WINDOW there: a hidden console, which the tools
+        // the backend starts inherit. SDL then reports exit code 0 for it; the events say how a build ended.
+        SDL_SetBooleanProperty(props, SDL_PROP_PROCESS_CREATE_BACKGROUND_BOOLEAN, true);
+#endif
         p = SDL_CreateProcessWithProperties(props);
         SDL_DestroyProperties(props);
         buf.clear();
