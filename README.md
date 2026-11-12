@@ -1,6 +1,6 @@
-<img src="assets/icon.png" alt="" width="96" align="right">
+<p align="center"><img src="assets/icon.png" alt="DekooNut" width="128"></p>
 
-# DekooNut
+<h1 align="center">DekooNut</h1>
 
 A native PC build of *The Legend of Zelda: Ocarina of Time* for Nintendo Switch 2 (update 1.1.1). The game's own
 code is recompiled to C ahead of time and linked with a runtime that stands in for the console: memory, threads,
