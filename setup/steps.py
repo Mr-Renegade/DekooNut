@@ -520,58 +520,76 @@ class Game(Step):
         return (win if WIN else []) + ['--dlss-sdk', fetch.DLSS_DIR]
 
 
-class Shaders(Step):
-    id, title = 'shaders', 'Preparing the shaders'
+def prepare_shaders(ctx, phase, pattern, text):
+    """tools/prepare_oot.py for one of its two long phases, each a step of its own so that the window's progress
+    never starts again in the middle of a step: phase is its option (--until translate, --build-only). pattern finds
+    the game's own progress lines of that phase in prepare.log, the file the tool sends them to."""
+    dest = ctx.dest
+    threads = max(2, min(6, (os.cpu_count() or 4) - 2))
+    cmd = [host.python314(), ROOT / 'tools' / 'prepare_oot.py', dest, '--romfs', dest / 'romfs',
+           '--xlate', dest / XLATE, '--threads', threads, '--no-lock', '--slice', 0, *phase]
+    ram = host.memory_bytes()
+    if shutil.which('systemd-run') and ram:   # a memory cap: the driver's compiler can take a lot
+        cap = max(6, min(14, ram * 7 // 10 // GiB))
+        cmd = ['systemd-run', '--user', '--scope', '--quiet', '-p', f'MemoryMax={cap}G', '-p',
+               'MemorySwapMax=2G', '-p', 'OOMPolicy=continue'] + cmd
+    env = host.tool_env()
+    env.update(play_env(dest))
+    if not WIN:
+        (dest / 'nvcache').mkdir(exist_ok=True)
+    log = dest / 'prepare.log'
+    done = threading.Event()
 
-    def key(self, ctx):
-        return digest(ctx.keys['game'], ctx.keys['translator'],
-                      tree_digest(ROOT / 'tools' / 'prepare_oot.py', ROOT / 'tools' / 'shader_census.py'))
-
-    def current(self, ctx, record):
-        return (ctx.dest / 'seed-answers.bin').is_file() and (ctx.dest / 'shader-cache').is_dir()
-
-    def run(self, ctx):
-        dest = ctx.dest
-        threads = max(2, min(6, (os.cpu_count() or 4) - 2))
-        cmd = [host.python314(), ROOT / 'tools' / 'prepare_oot.py', dest, '--romfs', dest / 'romfs',
-               '--xlate', dest / XLATE, '--threads', threads, '--no-lock', '--slice', 0]
-        ram = host.memory_bytes()
-        if shutil.which('systemd-run') and ram:   # a memory cap: the driver's compiler can take a lot
-            cap = max(6, min(14, ram * 7 // 10 // GiB))
-            cmd = ['systemd-run', '--user', '--scope', '--quiet', '-p', f'MemoryMax={cap}G', '-p',
-                   'MemorySwapMax=2G', '-p', 'OOMPolicy=continue'] + cmd
-        env = host.tool_env()
-        env.update(play_env(dest))
-        if not WIN:
-            (dest / 'nvcache').mkdir(exist_ok=True)
-        done = threading.Event()
-        watcher = threading.Thread(target=self.watch, args=(ctx, dest / 'prepare.log', done), daemon=True)
-        watcher.start()
-        try:
-            run(ctx, cmd, env=env, on_line=lambda line: ctx.progress(line.split('] ', 1)[-1][:90]),
-                what='The shader preparation')
-        finally:
-            done.set()
-            watcher.join()
-
-    @staticmethod
-    def watch(ctx, log, done):
-        """The game's own progress lines of this phase, from the file the tool sends them to."""
+    def watch():
         pos = log.stat().st_size if log.is_file() else 0
         while not done.wait(1):
             if not log.is_file():
                 continue
             with open(log, 'rb') as f:
                 f.seek(pos)
-                text = f.read().decode(errors='replace')
+                lines = f.read().decode(errors='replace').splitlines()
                 pos = f.tell()
-            for line in text.splitlines():
-                m = re.search(r'prepare: (\d+) of (\d+) pairs', line)
+            for line in lines:
+                m = re.search(pattern, line)
                 if m:
-                    ctx.progress('Translating', int(m.group(1)), int(m.group(2)))
-                m = re.search(r'prepare-shaders: built (\d+) of (\d+)', line)
-                if m:
-                    ctx.progress('Compiling for this graphics card', int(m.group(1)), int(m.group(2)))
+                    ctx.progress(text, int(m.group(1)), int(m.group(2)))
+
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
+    try:
+        run(ctx, cmd, env=env, on_line=lambda line: ctx.progress(line.split('] ', 1)[-1][:90]),
+            what='The shader preparation')
+    finally:
+        done.set()
+        watcher.join()
+
+
+class Translate(Step):
+    id, title = 'translate', 'Translating the shaders'
+
+    def key(self, ctx):
+        return digest(ctx.keys['game'], ctx.keys['translator'],
+                      tree_digest(ROOT / 'tools' / 'prepare_oot.py', ROOT / 'tools' / 'shader_census.py'))
+
+    def current(self, ctx, record):
+        return (ctx.dest / 'seed-answers.bin').is_file() and (ctx.dest / 'shader-prepared.bin').is_file() and \
+            (ctx.dest / 'shader-cache').is_dir()
+
+    def run(self, ctx):
+        prepare_shaders(ctx, ['--until', 'translate'], r'prepare: (\d+) of (\d+) pairs', 'Translating')
+
+
+class Shaders(Step):
+    id, title = 'shaders', 'Compiling the shaders for this graphics card'
+
+    def key(self, ctx):
+        return digest(ctx.keys['translate'], 'build')
+
+    def current(self, ctx, record):
+        return (ctx.dest / 'shader-built.log').is_file()
+
+    def run(self, ctx):
+        prepare_shaders(ctx, ['--build-only'], r'prepare-shaders: built (\d+) of (\d+)', 'Compiling')
 
 
 class Gamedata(Step):
@@ -685,5 +703,5 @@ class Finish(Step):
 
 
 def all_steps():
-    return [Check(), Tools(), Icon(), Exefs(), Romfs(), Generate(), Translator(), Mesh(), Game(), Shaders(),
-            Gamedata(), Finish()]
+    return [Check(), Tools(), Icon(), Exefs(), Romfs(), Generate(), Translator(), Mesh(), Game(), Translate(),
+            Shaders(), Gamedata(), Finish()]

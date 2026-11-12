@@ -18,9 +18,9 @@ from setup.events import Reporter   # noqa: E402
 from setup.steps import all_steps   # noqa: E402
 
 SECONDS = {'check': 0.6, 'tools': 1.5, 'icon': 0.8, 'exefs': 0.8, 'romfs': 4, 'generate': 3, 'translator': 2.5,
-           'mesh': 2, 'game': 6, 'shaders': 5, 'gamedata': 0.6, 'finish': 0.4}
+           'mesh': 2, 'game': 6, 'translate': 3, 'shaders': 5, 'gamedata': 0.6, 'finish': 0.4}
 TEXT = {'romfs': '{d:.1f} of 24.5 GB', 'generate': 'Writing C', 'game': 'Compiling', 'mesh': 'Compiling',
-        'shaders': 'Compiling for this graphics card', 'tools': 'Downloading the .NET SDK (about 220 MB)'}
+        'translate': 'Translating', 'shaders': 'Compiling', 'tools': 'Downloading the .NET SDK (about 220 MB)'}
 COMMAND = 'sudo apt install clang lld libdav1d-dev libopus-dev libsdl3-dev libvpx-dev libvulkan-dev libzstd-dev'
 
 

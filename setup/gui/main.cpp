@@ -208,7 +208,8 @@ static float g_font_scale;
 #define MENU "applications menu"
 #endif
 
-static const float STEP_WEIGHT[] = {1, 3, 1, 1, 12, 10, 8, 6, 30, 25, 1, 1};
+// By step (setup/steps.py all_steps): ..., the game, translating the shaders, compiling them, the level, finishing.
+static const float STEP_WEIGHT[] = {1, 3, 1, 1, 12, 10, 8, 6, 30, 12, 25, 1, 1};
 
 static ImU32 C(float r, float g, float b, float a = 1) { return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a)); }
 static const ImVec4 GOLD(0.96f, 0.74f, 0.28f, 1), TEXT(0.96f, 0.92f, 0.84f, 1), DIM(0.66f, 0.58f, 0.47f, 1);
@@ -416,8 +417,8 @@ static void take_picks() {
     SDL_UnlockMutex(g_pick_lock);
 }
 
-// ---- the scene: the top of a great stump, the nut at the heart of its rings. The twelve rings around the nut are
-// the build's steps: a finished step's ring glows, the running one fills clockwise.
+// ---- the scene: the top of a great stump, the nut at the heart of its rings. The rings around the nut are the
+// build's steps, one each: a finished step's ring glows, the running one fills clockwise.
 
 static const float TAU = 6.2831853f;
 
@@ -775,7 +776,7 @@ static void view_build(float w, float s, float t) {
     snprintf(info, sizeof info, "Step %d of %d   ·   %s", A.cur + 1, (int)A.steps.size(), duration(SDL_GetTicks() - A.started).c_str());
     wrapped(F_BODY, DIM, A.progress.empty() ? std::string(A.steps.empty() ? "" : info) : A.progress + "   ·   " + info, w);
     gap(14 * s);
-    float list_h = 12 * 33 * s;
+    float list_h = (A.steps.size() > 12 ? A.steps.size() : 12) * 33 * s;
     if (A.show_log) {
         ImGui::PushFont(F_MONO);
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0.45f));
