@@ -877,10 +877,13 @@ static void view_done(float w, float s) {
 }
 
 static void column(float W, float H, float s, float t) {
-    float x = W * 0.615f, w = W * 0.335f, y = H * (A.card == CARD_NONE ? 0.095f : 0.13f);
-    ImGui::SetNextWindowPos(ImVec2(x, y));
-    ImGui::SetNextWindowSize(ImVec2(w, H - y - 20 * s));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    float x = floorf(W * 0.615f), w = floorf(W * 0.335f), y = H * (A.card == CARD_NONE ? 0.095f : 0.13f);
+    // The window clips at its edge (and a pixel inside it): a margin keeps the outline of a full-width row of
+    // buttons whole. The content still starts at x and is w wide.
+    float m = ceilf(4 * s);
+    ImGui::SetNextWindowPos(ImVec2(x - m, y));
+    ImGui::SetNextWindowSize(ImVec2(w + 2 * m, H - y - 20 * s));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(m, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 9 * s));
     ImGui::Begin("##column", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoSavedSettings);
     if (A.card == CARD_NONE) view_form(w, s);
