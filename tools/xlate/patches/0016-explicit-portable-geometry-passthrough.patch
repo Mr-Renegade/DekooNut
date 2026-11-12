@@ -1,0 +1,80 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/AttributeUsage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/AttributeUsage.cs
+@@ -51,6 +51,24 @@
+         public void SetOutputUserAttributePerPatch(int index)
+         {
+             UsedOutputAttributesPerPatch.Add(index);
++        }
++
++        public void SetGeometryPassthroughAttributes(int mask)
++        {
++            // This mask comes from the complete hardware skip words, not inferred fragment inputs.
++            PassthroughAttributes = mask;
++            _nextUsedInputAttributes = mask;
++            NextInputAttributesComponents = 0;
++            NextUsedInputAttributesPerPatch = [];
++            for (int index = 0; index < 32; index++)
++            {
++                if ((mask & (1 << index)) == 0) continue;
++                for (int component = 0; component < 4; component++)
++                {
++                    SetInputUserAttribute(index, component);
++                    NextInputAttributesComponents |= UInt128.One << (index * 4 + component);
++                }
++            }
+         }
+ 
+         public void MergeFromtNextStage(bool gpPassthrough, bool nextUsesFixedFunctionAttributes, AttributeUsage nextStage)
+--- a/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
+@@ -19,6 +19,7 @@
+         private readonly DecodedProgram _program;
+         private readonly int _localMemorySize;
+         private IoUsage _vertexOutput;
++        private bool _explicitGeometryPassthrough;
+ 
+         public ulong Address { get; }
+         public int Size { get; }
+@@ -176,6 +177,11 @@
+ 
+         public void SetNextStage(TranslatorContext nextStage)
+         {
++            if (_explicitGeometryPassthrough)
++            {
++                throw new InvalidOperationException("Explicit passthrough linkage cannot be replaced by next-stage inference");
++            }
++
+             AttributeUsage.MergeFromtNextStage(
+                 Definitions.GpPassthrough,
+                 nextStage._program.UsedFeatures.HasFlag(FeatureFlags.FixedFuncAttr),
+@@ -189,6 +195,30 @@
+             {
+                 Definitions.LastInVertexPipeline = false;
+             }
++        }
++
++        public void SetGeometryPassthroughAttributes(int mask)
++        {
++            if (Stage != ShaderStage.Geometry || !Definitions.GpPassthrough ||
++                GpuAccessor.QueryHostSupportsGeometryShaderPassthrough())
++            {
++                throw new InvalidOperationException("Explicit passthrough attributes require portable geometry passthrough");
++            }
++
++            // AST includes fixed builtins and physical/per-patch writes. OUT includes emission and cuts.
++            // Reject decoded predicated forms too: this subset forwards inputs and only retains body side effects.
++            foreach (DecodedFunction function in _program)
++            foreach (Block block in function.Blocks)
++            foreach (InstOp op in block.OpCodes)
++            {
++                if (op.Name == InstName.Ast || op.Name == InstName.Out)
++                {
++                    throw new NotSupportedException("Portable passthrough does not support explicit attribute writes or emission");
++                }
++            }
++
++            AttributeUsage.SetGeometryPassthroughAttributes(mask);
++            _explicitGeometryPassthrough = true;
+         }
+ 
+         public ShaderProgram Translate(bool asCompute = false)

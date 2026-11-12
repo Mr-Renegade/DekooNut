@@ -1,0 +1,35 @@
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs
+@@ -70,6 +70,32 @@ namespace Ryujinx.Graphics.Shader.Instructions
+ 
+             int count = op.LsSize == LsSize2.B64 ? 2 : 1;
+ 
++            // DKB: an LDC with a constant address (RZ index) reads one fixed constant buffer word, so it becomes the
++            // constant buffer operand an ALU instruction would carry. GlobalToStorage only recognises a storage buffer
++            // base in that form; the Switch 2 lowering loads uniform-register bases (ULDC.64 c[0x0][...]) with LDC.64.
++            if (op.SrcA == RegisterConsts.RegisterZeroIndex && !isSmallInt &&
++                op.AddressMode is not (AddressMode.Is or AddressMode.Isl))
++            {
++                int byteOffset = Imm16ToSInt(op.CbufOffset);
++
++                if (byteOffset >= 0 && (byteOffset & 3) == 0)
++                {
++                    for (int index = 0; index < count; index++)
++                    {
++                        Register cdest = new(op.Dest + index, RegisterType.Gpr);
++
++                        if (cdest.IsRZ)
++                        {
++                            break;
++                        }
++
++                        context.Copy(Register(cdest), Cbuf(op.CbufSlot, byteOffset / 4 + index));
++                    }
++
++                    return;
++                }
++            }
++
+             Operand slot = Const(op.CbufSlot);
+             Operand srcA = GetSrcReg(context, op.SrcA);
+ 

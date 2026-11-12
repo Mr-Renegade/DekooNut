@@ -1,0 +1,180 @@
+--- a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
++++ b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+@@ -161,6 +161,10 @@ namespace Ryujinx.Graphics.Shader
+         bool QueryStorageBufferRuntimeCandidates() => false;
+         bool QueryHostSupportsStorageBufferArrayLength() => false;
+ 
++        // How a global access reaches memory that no bound buffer proves: 0 the guarded candidates, 1 one flat device address
++        // range (a mask, an OR and the access), 2 a table of device pages (a table load, then the access).
++        int QueryFlatGlobalMemory() => 0;
++
+         // Returns the count of bound NVN 2 compute buffer descriptors that can be tested as guarded candidates.
+         int QueryStorageBufferCandidateCount() => 0;
+ 
+--- a/src/Ryujinx.Graphics.Shader/SupportBuffer.cs
++++ b/src/Ryujinx.Graphics.Shader/SupportBuffer.cs
+@@ -25,6 +25,8 @@ namespace Ryujinx.Graphics.Shader
+         TfeOffset,
+         TfeVertexCount,
+         PointSize,
++        GmemLow,
++        GmemHigh,
+     }
+ 
+     public struct SupportBuffer
+@@ -82,7 +84,9 @@ namespace Ryujinx.Graphics.Shader
+                 new StructureField(AggregateType.Array | AggregateType.FP32, "render_scale", RenderScaleMaxCount),
+                 new StructureField(AggregateType.Vector4 | AggregateType.S32, "tfe_offset"),
+                 new StructureField(AggregateType.S32, "tfe_vertex_count"),
+-                new StructureField(AggregateType.FP32, "point_size")
++                new StructureField(AggregateType.FP32, "point_size"),
++                new StructureField(AggregateType.U32, "gmem_low"),
++                new StructureField(AggregateType.U32, "gmem_high")
+             ]);
+         }
+ 
+@@ -98,5 +102,7 @@ namespace Ryujinx.Graphics.Shader
+         public Vector4<int> TfeOffset;
+         public Vector4<int> TfeVertexCount;
+         public Vector4<float> PointSize;
++        public Vector4<int> GmemLow;
++        public Vector4<int> GmemHigh;
+     }
+ }
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -460,7 +460,10 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+                 AddCandidate(new SearchResult(0, offset));
+             }
+ 
+-            if (candidates.Count == 0)
++            int flatMode = gpuAccessor.QueryFlatGlobalMemory();
++            bool flat = flatMode != 0;
++
++            if (candidates.Count == 0 && !flat)
+             {
+                 // Keep enough of the pointer expression to distinguish an unsupported dynamic base from a missed
+                 // constant-buffer root. The queue is capped because real shaders may build long address chains.
+@@ -501,7 +504,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+             }
+             // Only an address built from a pointer read from memory can miss every bound buffer on purpose. The pool table
+             // costs about 30 instructions per access, and the driver took 35 s over one shader with it behind every access.
+-            bool raw = AddressIsLoadedPointer(operation.GetSource(1), candidates);
++            bool raw = !flat && AddressIsLoadedPointer(operation.GetSource(1), candidates);
+             if (raw)
+             {
+                 candidates.Add(RawMarker);
+@@ -532,6 +535,12 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+                     throw new NotSupportedException("Storage candidates exceed the descriptor resource limit.");
+                 }
+ 
++                // Flat memory: the shader never reads this binding, the host still learns from it what the shader may write.
++                if (flat)
++                {
++                    continue;
++                }
++
+                 // Match the host exactly: without an explicit unaligned-storage
+                 // contract it binds the pointer itself, not the accessor's default.
+                 Operand baseLow = storageUnaligned
+@@ -577,9 +586,17 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+             {
+                 EmitRawGlobalAccess(context, resourceManager, operation, arguments, low, high);
+             }
++            else if (flat)
++            {
++                EmitFlatGlobalAccess(context, resourceManager, operation, arguments, low, high, flatMode);
++            }
+ 
+             bool returnsValue = operation.Dest != null;
+-            if (returnsValue)
++            if (flat)
++            {
++                // EmitFlatGlobalAccess has returned.
++            }
++            else if (returnsValue)
+             {
+                 context.Return(Const(0));
+             }
+@@ -669,6 +686,49 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+             return result;
+         }
+ 
++        // Flat memory (runtime/vk_flat.c): device address = window | guest address. The window is aligned to the guest's 39-bit
++        // address space, so the low word stays as it is and one OR merges the high word; the mask keeps a wild pointer inside
++        // the window, where a page nobody bound reads 0 and drops writes. No lookup, no bounds check, no branch.
++        private const int FlatAddressHighMask = 0x7f;
++        private const int FlatTableHighLimit = 0x10;      // 36 bits of guest address
++        private const int FlatTableEntries = 1 << 24;
++
++        private static void EmitFlatGlobalAccess(
++            EmitterContext context,
++            ResourceManager resourceManager,
++            Operation operation,
++            int arguments,
++            Operand addrLow,
++            Operand addrHigh,
++            int mode)
++        {
++            resourceManager.Properties.UsesPhysicalPointers = true;
++
++            Operand tableHigh = context.Load(StorageKind.ConstantBuffer, SupportBuffer.Binding, Const((int)SupportBufferField.GmemHigh));
++            Operand high = context.BitwiseAnd(addrHigh, Const(FlatAddressHighMask));
++            Operand hostHigh, hostLow;
++
++            if (mode == 1)
++            {
++                hostHigh = context.BitwiseOr(high, tableHigh);
++                hostLow = context.BitwiseAnd(addrLow, Const(~3));
++            }
++            else
++            {
++                // Table of device page numbers (runtime/vk_memory.c), one 32-bit entry per 4 KiB of guest address, aligned
++                // to its size. Past its range an access takes the last entry, a page kept for wild pointers.
++                Operand tableLow = context.Load(StorageKind.ConstantBuffer, SupportBuffer.Binding, Const((int)SupportBufferField.GmemLow));
++                Operand index = context.BitwiseOr(context.ShiftLeft(high, Const(20)), context.ShiftRightU32(addrLow, Const(12)));
++                index = context.ConditionalSelect(context.ICompareLessUnsigned(high, Const(FlatTableHighLimit)), index, Const(FlatTableEntries - 1));
++                Operand entry = context.Load(StorageKind.GlobalMemory, context.BitwiseOr(tableLow, context.ShiftLeft(index, Const(2))), tableHigh);
++
++                hostLow = context.BitwiseOr(context.ShiftLeft(entry, Const(12)), context.BitwiseAnd(addrLow, Const(0xffc)));
++                hostHigh = context.ShiftRightU32(entry, Const(20));
++            }
++
++            EmitPhysicalAccess(context, operation, arguments, addrLow, hostLow, hostHigh);
++        }
++
+         private static void EmitRawGlobalAccess(
+             EmitterContext context,
+             ResourceManager resourceManager,
+@@ -726,6 +786,22 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+             Operand carry = context.ConditionalSelect(context.ICompareLessUnsigned(hostLow, wordLow), Const(1), Const(0));
+             Operand hostHigh = context.IAdd(context.IAdd(addrHigh, MapWord(found, 5)), carry);
+ 
++            EmitPhysicalAccess(context, operation, arguments, addrLow, hostLow, hostHigh);
++
++            context.MarkLabel(lblSkip);
++        }
++
++        // Does the operation at a device address, then returns from the helper function. hostLow is word aligned; addrLow is
++        // the guest's, which places a small integer in its word.
++        private static void EmitPhysicalAccess(
++            EmitterContext context,
++            Operation operation,
++            int arguments,
++            Operand addrLow,
++            Operand hostLow,
++            Operand hostHigh)
++        {
++            bool isSmall = IsSmallInt(operation.StorageKind);
+             Operand resultValue = null;
+ 
+             if (operation.Inst == Instruction.Load)
+@@ -785,8 +861,6 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+             {
+                 context.Return();
+             }
+-
+-            context.MarkLabel(lblSkip);
+         }
+ 
+         private static bool CanUseInlineStorageOp(Operation operation, TargetLanguage targetLanguage)

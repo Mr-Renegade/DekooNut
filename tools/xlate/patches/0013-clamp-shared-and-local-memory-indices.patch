@@ -1,0 +1,43 @@
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+@@ -1696,6 +1696,7 @@
+             SpvInstruction baseObj;
+             int srcIndex = 0;
+             IoVariable? perVertexBuiltIn = null;
++            int memoryLength = 0;   // DKB: elements of the shared or local array the index is clamped to
+ 
+             switch (storageKind)
+             {
+@@ -1735,12 +1736,14 @@
+                         storageClass = StorageClass.Private;
+                         varType = context.Properties.LocalMemories[bindingId.Value].Type & AggregateType.ElementTypeMask;
+                         baseObj = context.LocalMemories[bindingId.Value];
++                        memoryLength = context.Properties.LocalMemories[bindingId.Value].ArrayLength;
+                     }
+                     else
+                     {
+                         storageClass = StorageClass.Workgroup;
+                         varType = context.Properties.SharedMemories[bindingId.Value].Type & AggregateType.ElementTypeMask;
+                         baseObj = context.SharedMemories[bindingId.Value];
++                        memoryLength = context.Properties.SharedMemories[bindingId.Value].ArrayLength;
+                     }
+ 
+                     break;
+@@ -1856,7 +1859,16 @@
+                     pointer = baseObj;
+                     break;
+                 case 1:
+-                    e0 = context.Get(AggregateType.S32, operation.GetSource(srcIndex++));
++                    e0 = context.Get(memoryLength > 1 ? AggregateType.U32 : AggregateType.S32, operation.GetSource(srcIndex++));
++                    if (memoryLength > 1)
++                    {
++                        // DKB: an index past the end of shared or local memory is clamped to the last element (read as
++                        // unsigned, so a negative one is too). The console allocates per-block memory in larger steps,
++                        // so a shader that reads a little past its declared size (Bananza's upscaling network, with
++                        // indices taken from its data) works there; on the PC the access leaves the array and NVIDIA's
++                        // driver loses the device.
++                        e0 = context.Delegates.GlslUMin(context.TypeU32(), e0, context.Constant(context.TypeU32(), memoryLength - 1));
++                    }
+                     pointer = context.AccessChain(context.TypePointer(storageClass, context.GetType(varType)), baseObj, e0);
+                     break;
+                 case 2:

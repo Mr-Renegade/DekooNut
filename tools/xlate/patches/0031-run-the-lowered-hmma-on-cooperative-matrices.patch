@@ -1,0 +1,275 @@
+diff --git a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+index 4d1f49f..a352d7a 100644
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+@@ -125,6 +125,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             Add(Instruction.ShiftLeft,                GenerateShiftLeft);
+             Add(Instruction.ShiftRightS32,            GenerateShiftRightS32);
+             Add(Instruction.ShiftRightU32,            GenerateShiftRightU32);
++            Add(Instruction.MatrixMultiplyAdd,        GenerateMatrixMultiplyAdd);
+             Add(Instruction.Shuffle,                  GenerateShuffle);
+             Add(Instruction.ShuffleDown,              GenerateShuffleDown);
+             Add(Instruction.ShuffleUp,                GenerateShuffleUp);
+@@ -1089,6 +1090,65 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             return GenerateBinaryS32(context, operation, context.Delegates.ShiftRightLogical);
+         }
+ 
++        // The lowered HMMA.16816.F16 (InstEmit.Mma): sources A0-A3, B0-B1, C0-C1, each a pair of halves; the result is the
++        // two words of D. The subgroup matrices' per-invocation element order on the device was measured to be the
++        // fragment layout the registers use, except that A's elements come in register order 0, 2, 1, 3
++        // (oot.exe --probe-coopmat), so no data moves between invocations: the elements go in and out with
++        // OpCompositeInsert / OpCompositeExtract.
++        private static OperationResult GenerateMatrixMultiplyAdd(CodeGenContext context, AstOperation operation)
++        {
++            context.UseCooperativeMatrixKhr();
++
++            SpvInstruction u32 = context.TypeU32();
++            SpvInstruction f16 = context.TypeFloat(16);
++            SpvInstruction v2f16 = context.TypeVector(f16, 2);
++            SpvInstruction scope = context.Constant(u32, (int)Scope.Subgroup);
++            SpvInstruction c16 = context.Constant(u32, 16);
++            SpvInstruction c8 = context.Constant(u32, 8);
++            SpvInstruction typeA = context.TypeCooperativeMatrixKHR(f16, scope, c16, c16, context.Constant(u32, 0));
++            SpvInstruction typeB = context.TypeCooperativeMatrixKHR(f16, scope, c16, c8, context.Constant(u32, 1));
++            SpvInstruction typeC = context.TypeCooperativeMatrixKHR(f16, scope, c16, c8, context.Constant(u32, 2));
++
++            SpvInstruction[] halves = new SpvInstruction[8];
++
++            for (int i = 0; i < 8; i++)
++            {
++                halves[i] = context.Bitcast(v2f16, context.GetU32(operation.GetSource(i)));
++            }
++
++            SpvInstruction Fill(SpvInstruction type, int count, int first, int[] order)
++            {
++                SpvInstruction m = context.Undef(type);
++
++                for (int e = 0; e < count; e++)
++                {
++                    int reg = first + (order != null ? order[e / 2] : e / 2);
++                    SpvInstruction h = context.CompositeExtract(f16, halves[reg], e & 1);
++                    m = context.CompositeInsert(type, h, m, e);
++                }
++
++                return m;
++            }
++
++            SpvInstruction a = Fill(typeA, 8, 0, [0, 2, 1, 3]);
++            SpvInstruction b = Fill(typeB, 4, 4, null);
++            SpvInstruction c = Fill(typeC, 4, 6, null);
++            SpvInstruction d = context.CooperativeMatrixMulAddKHR(typeC, a, b, c);
++
++            SpvInstruction[] words = new SpvInstruction[2];
++
++            for (int w = 0; w < 2; w++)
++            {
++                SpvInstruction lo = context.CompositeExtract(f16, d, 2 * w);
++                SpvInstruction hi = context.CompositeExtract(f16, d, 2 * w + 1);
++                words[w] = context.Bitcast(u32, context.CompositeConstruct(v2f16, lo, hi));
++            }
++
++            SpvInstruction result = context.CompositeConstruct(context.TypeVector(u32, 2), words[0], words[1]);
++
++            return new OperationResult(AggregateType.U32 | AggregateType.Vector2, result);
++        }
++
+         private static OperationResult GenerateShuffle(CodeGenContext context, AstOperation operation)
+         {
+             SpvInstruction value = context.GetFP32(operation.GetSource(0));
+diff --git a/src/Ryujinx.Graphics.Shader/Decoders/InstName.cs b/src/Ryujinx.Graphics.Shader/Decoders/InstName.cs
+index 04ad939..eae54eb 100644
+--- a/src/Ryujinx.Graphics.Shader/Decoders/InstName.cs
++++ b/src/Ryujinx.Graphics.Shader/Decoders/InstName.cs
+@@ -184,5 +184,6 @@ namespace Ryujinx.Graphics.Shader.Decoders
+         Vshl,
+         Vshr,
+         Xmad,
++        Mma,
+     }
+ }
+diff --git a/src/Ryujinx.Graphics.Shader/Decoders/InstTable.cs b/src/Ryujinx.Graphics.Shader/Decoders/InstTable.cs
+index 35367b8..62e4215 100644
+--- a/src/Ryujinx.Graphics.Shader/Decoders/InstTable.cs
++++ b/src/Ryujinx.Graphics.Shader/Decoders/InstTable.cs
+@@ -263,6 +263,9 @@ namespace Ryujinx.Graphics.Shader.Decoders
+             Add("0101110011111xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", InstName.Shf,         InstEmit.ShfRR,       InstProps.Rd  | InstProps.Ra  | InstProps.Rb  | InstProps.Rc);
+             Add("0011011x11111xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", InstName.Shf,         InstEmit.ShfLI,       InstProps.Rd  | InstProps.Ra  | InstProps.Ib  | InstProps.Rc);
+             Add("0011100x11111xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", InstName.Shf,         InstEmit.ShfRI,       InstProps.Rd  | InstProps.Ra  | InstProps.Ib  | InstProps.Rc);
++            // Not a Maxwell instruction: ocarina-of-time-recomp's SM86 lowering (runtime/sm86_lower.c lower_hmma) marks an
++            // HMMA.16816.F16 with this encoding: Rd 0-7, Ra 8-15 (four registers), Rb 20-27 (two), Rc 39-46 (two).
++            Add("111101111111xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", InstName.Mma,         InstEmit.Mma,         InstProps.Rd  | InstProps.Ra  | InstProps.Rb  | InstProps.Rc);
+             Add("1110111100010xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", InstName.Shfl,        InstEmit.Shfl,        InstProps.Rd  | InstProps.Ra  | InstProps.Rb  | InstProps.Rc  | InstProps.LPd);
+             Add("0101110001001xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", InstName.Shl,         InstEmit.ShlR,        InstProps.Rd  | InstProps.Ra  | InstProps.Rb);
+             Add("0011100x01001xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", InstName.Shl,         InstEmit.ShlI,        InstProps.Rd  | InstProps.Ra  | InstProps.Ib);
+diff --git a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitWarp.cs b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitWarp.cs
+index 73eea5c..0e83bbe 100644
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitWarp.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitWarp.cs
+@@ -45,6 +45,37 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             context.Copy(pred, valid);
+         }
+ 
++        // The lowering's marker for SM86 HMMA.16816.F16 (InstTable): D[2] = A[4] x B[2] + C[2] over the subgroup, each
++        // register a pair of halves in the tensor cores' fragment layout. One operation with two results; the SPIR-V
++        // back end makes it a cooperative matrix multiply-add (CodeGen/Spirv/Instructions.cs GenerateMatrixMultiplyAdd).
++        public static void Mma(EmitterContext context)
++        {
++            Translation.TensorProgram.Active = true;
++
++            ulong op = context.CurrOp.RawOpCode;
++            int rd = (int)(op & 0xff), ra = (int)((op >> 8) & 0xff), rb = (int)((op >> 20) & 0xff), rc = (int)((op >> 39) & 0xff);
++
++            Operand[] sources = new Operand[8];
++
++            for (int i = 0; i < 4; i++)
++            {
++                sources[i] = GetSrcReg(context, ra == RegisterConsts.RegisterZeroIndex ? ra : ra + i);
++            }
++
++            for (int i = 0; i < 2; i++)
++            {
++                sources[4 + i] = GetSrcReg(context, rb == RegisterConsts.RegisterZeroIndex ? rb : rb + i);
++                sources[6 + i] = GetSrcReg(context, rc == RegisterConsts.RegisterZeroIndex ? rc : rc + i);
++            }
++
++            Operand d0 = Local(), d1 = Local();
++
++            context.Add(new Operation(Instruction.MatrixMultiplyAdd, 3, [d0, d1], sources));
++
++            context.Copy(GetDest(rd), d0);
++            context.Copy(GetDest(rd + 1), d1);
++        }
++
+         public static void Vote(EmitterContext context)
+         {
+             InstVote op = context.GetOp<InstVote>();
+diff --git a/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/Instruction.cs b/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/Instruction.cs
+index 8df623a..a0fb6eb 100644
+--- a/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/Instruction.cs
++++ b/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/Instruction.cs
+@@ -125,6 +125,7 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
+         VoteAll,
+         VoteAllEqual,
+         VoteAny,
++        MatrixMultiplyAdd,
+ 
+         StorageBufferLength,
+ 
+diff --git a/src/Ryujinx.Graphics.Shader/StructuredIr/InstructionInfo.cs b/src/Ryujinx.Graphics.Shader/StructuredIr/InstructionInfo.cs
+index 5931eba..c54b0da 100644
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/InstructionInfo.cs
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/InstructionInfo.cs
+@@ -115,6 +115,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+             Add(Instruction.ShiftLeft,                AggregateType.S32,    AggregateType.S32,     AggregateType.S32);
+             Add(Instruction.ShiftRightS32,            AggregateType.S32,    AggregateType.S32,     AggregateType.S32);
+             Add(Instruction.ShiftRightU32,            AggregateType.U32,    AggregateType.U32,     AggregateType.S32);
++            Add(Instruction.MatrixMultiplyAdd,        AggregateType.U32,    AggregateType.U32,     AggregateType.U32,     AggregateType.U32,     AggregateType.U32,     AggregateType.U32,     AggregateType.U32,     AggregateType.U32,     AggregateType.U32);
+             Add(Instruction.Shuffle,                  AggregateType.FP32,   AggregateType.FP32,    AggregateType.U32);
+             Add(Instruction.ShuffleDown,              AggregateType.FP32,   AggregateType.FP32,    AggregateType.U32);
+             Add(Instruction.ShuffleUp,                AggregateType.FP32,   AggregateType.FP32,    AggregateType.U32);
+diff --git a/src/Ryujinx.Graphics.Shader/StructuredIr/StructuredProgram.cs b/src/Ryujinx.Graphics.Shader/StructuredIr/StructuredProgram.cs
+index 63bd820..79e60cd 100644
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/StructuredProgram.cs
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/StructuredProgram.cs
+@@ -424,6 +424,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+             return inst switch
+             {
+                 Instruction.ImageLoad or
++                Instruction.MatrixMultiplyAdd or
+                 Instruction.TextureSample => true,
+                 _ => false,
+             };
+diff --git a/src/Ryujinx.Graphics.Shader/Translation/TensorProgram.cs b/src/Ryujinx.Graphics.Shader/Translation/TensorProgram.cs
+new file mode 100644
+index 0000000..8911cea
+--- /dev/null
++++ b/src/Ryujinx.Graphics.Shader/Translation/TensorProgram.cs
+@@ -0,0 +1,13 @@
++using System;
++
++namespace Ryujinx.Graphics.Shader.Translation
++{
++    // OoT (2026-11-06): true while translating a program that holds the lowered HMMA marker (InstEmit.Mma). The three
++    // fixes below came with that path from ocarina-of-time-recomp and stay limited to it, so every other shader keeps
++    // the SPIR-V it had; they are general fixes and could be opened to all programs once that has been tested.
++    static class TensorProgram
++    {
++        [ThreadStatic]
++        public static bool Active;
++    }
++}
+diff --git a/src/Ryujinx.Graphics.Shader/Translation/Translator.cs b/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
+index 5a91c86..9ecd1c9 100644
+--- a/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
+@@ -143,6 +143,8 @@ namespace Ryujinx.Graphics.Shader.Translation
+         {
+             initializationOperations = 0;
+ 
++            TensorProgram.Active = false;
++
+             FunctionMatch.RunPass(program);
+ 
+             foreach (DecodedFunction function in program.Where(x => !x.IsCompilerGenerated).OrderBy(x => x.Address))
+diff --git a/src/Spv.Generator/CooperativeMatrixKhr.cs b/src/Spv.Generator/CooperativeMatrixKhr.cs
+new file mode 100644
+index 0000000..4c8da6f
+--- /dev/null
++++ b/src/Spv.Generator/CooperativeMatrixKhr.cs
+@@ -0,0 +1,56 @@
++using static Spv.Specification;
++
++namespace Spv.Generator
++{
++    // SPV_KHR_cooperative_matrix, which this generator's grammar predates (it has only the NV extension's opcodes):
++    // the type and the multiply-add, by their opcode numbers in the SPIR-V registry (ocarina-of-time-recomp, for the
++    // lowered SM86 HMMA).
++    public partial class Module
++    {
++        private const Op OpTypeCooperativeMatrixKHR = (Op)4456;
++        private const Op OpCooperativeMatrixMulAddKHR = (Op)4459;
++        private const Capability CapabilityCooperativeMatrixKHR = (Capability)6022;
++
++        // Declares the capabilities and the extension the two instructions below need, once per module.
++        public void UseCooperativeMatrixKhr()
++        {
++            if (!_capabilities.Contains(CapabilityCooperativeMatrixKHR))
++            {
++                _capabilities.Add(CapabilityCooperativeMatrixKHR);
++                _extensions.Add("SPV_KHR_cooperative_matrix");
++            }
++
++            if (!_capabilities.Contains(Capability.Float16))
++            {
++                _capabilities.Add(Capability.Float16);
++            }
++        }
++
++        // use: 0 MatrixA, 1 MatrixB, 2 MatrixAccumulator; scope, rows, columns and use are constant ids.
++        public Instruction TypeCooperativeMatrixKHR(Instruction componentType, Instruction scope, Instruction rows, Instruction columns, Instruction use)
++        {
++            Instruction result = NewInstruction(OpTypeCooperativeMatrixKHR);
++
++            result.AddOperand(componentType);
++            result.AddOperand(scope);
++            result.AddOperand(rows);
++            result.AddOperand(columns);
++            result.AddOperand(use);
++            AddTypeDeclaration(result, false);
++
++            return result;
++        }
++
++        public Instruction CooperativeMatrixMulAddKHR(Instruction resultType, Instruction a, Instruction b, Instruction c)
++        {
++            Instruction result = NewInstruction(OpCooperativeMatrixMulAddKHR, GetNewId(), resultType);
++
++            result.AddOperand(a);
++            result.AddOperand(b);
++            result.AddOperand(c);
++            AddToFunctionDefinitions(result);
++
++            return result;
++        }
++    }
++}

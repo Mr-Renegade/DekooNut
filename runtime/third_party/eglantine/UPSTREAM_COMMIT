@@ -1,0 +1,5 @@
+724aede4ea51fae8224cdd02549cdbdf7ceecd25  (base: zortos293/Lichii, branch nx2)
+82b95a65d46527f0cfad3d5661439228897fee49  (selected Ocarina fixes: branch fix/oot-fog)
+The lowering retains the local per-tap control-flow proof, adds guarded IMAD offset proofs and distinguishes uniform destinations from GPR writes.
+The local ULDC change also accepts indexed unsigned byte/halfword loads through Maxwell LDC, with the existing offset and operand guards retained.
+The local register-pressure table includes immediate FMNMX, P2R and indexed LDC so high guest registers are preserved for those already-supported instructions.

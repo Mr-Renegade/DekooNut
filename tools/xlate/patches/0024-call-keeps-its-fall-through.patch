@@ -1,0 +1,12 @@
+--- a/src/Ryujinx.Graphics.Shader/Decoders/Decoder.cs
++++ b/src/Ryujinx.Graphics.Shader/Decoders/Decoder.cs
+@@ -500,7 +500,8 @@
+
+         public static bool IsUnconditionalBranch(ref InstOp op)
+         {
+-            return IsUnconditional(ref op) && op.Props.HasFlag(InstProps.Bra);
++            // dwk001's fix from issue #45, not upstream yet: a call returns to the next instruction, so it never ends the flow.
++            return IsUnconditional(ref op) && op.Props.HasFlag(InstProps.Bra) && op.Name != InstName.Cal;
+         }
+
+         private static bool IsUnconditional(ref InstOp op)

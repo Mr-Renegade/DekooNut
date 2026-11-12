@@ -1,0 +1,40 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/EmitterContext.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/EmitterContext.cs
+@@ -85,7 +85,9 @@
+             // OpenGL requires the point size to be always written on the shader if PROGRAM_POINT_SIZE is set.
+             if (TranslatorContext.Definitions.Stage == ShaderStage.Vertex)
+             {
+-                this.Store(StorageKind.Output, IoVariable.PointSize, null, ConstF(TranslatorContext.Definitions.PointSize));
++                // TOTK: the point size is NVN state (SetPointSize), not a translation constant: read it from the support buffer, which the
++                // host fills per draw. A shader that writes gl_PointSize itself overwrites this store.
++                this.Store(StorageKind.Output, IoVariable.PointSize, null, this.Load(StorageKind.ConstantBuffer, SupportBuffer.Binding, Const((int)SupportBufferField.PointSize)));
+             }
+ 
+             if (VertexAsCompute)
+--- a/src/Ryujinx.Graphics.Shader/SupportBuffer.cs
++++ b/src/Ryujinx.Graphics.Shader/SupportBuffer.cs
+@@ -24,6 +24,7 @@
+         RenderScale,
+         TfeOffset,
+         TfeVertexCount,
++        PointSize,
+     }
+ 
+     public struct SupportBuffer
+@@ -80,7 +81,8 @@
+                 new StructureField(AggregateType.S32, "frag_scale_count"),
+                 new StructureField(AggregateType.Array | AggregateType.FP32, "render_scale", RenderScaleMaxCount),
+                 new StructureField(AggregateType.Vector4 | AggregateType.S32, "tfe_offset"),
+-                new StructureField(AggregateType.S32, "tfe_vertex_count")
++                new StructureField(AggregateType.S32, "tfe_vertex_count"),
++                new StructureField(AggregateType.FP32, "point_size")
+             ]);
+         }
+ 
+@@ -95,5 +97,6 @@
+ 
+         public Vector4<int> TfeOffset;
+         public Vector4<int> TfeVertexCount;
++        public Vector4<float> PointSize;
+     }
+ }

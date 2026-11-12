@@ -1,0 +1,13 @@
+#version 450
+// The upscaler stand-in's source (vk_exec_draw.c upscale_rgb9e5): the game's packing pass stores sqrt(colour) in RGB9E5
+// and its neural upscaler squares it on the way out, so a stand-in that skips the network has to square it too.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D src;
+layout(binding = 1, rgba16f) uniform writeonly image2D dst;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, imageSize(dst)))) return;
+    vec3 c = texelFetch(src, p, 0).rgb;
+    imageStore(dst, p, vec4(c * c, 1.0));
+}

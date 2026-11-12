@@ -1,0 +1,55 @@
+#version 450
+// Camera motion from the scene depth, as Lichii 65e979ad
+// ocarina_camera_motion.comp (GPL-3.0). Each pixel's depth is taken back to clip space and reprojected into the previous
+// frame's with previous * inverse(current); the motion is in render pixels, toward the previous frame.
+// params.mode 1: zero motion for what the camera follows. Where last frame's depth at the reprojected place belongs to
+// something else (off by more than params.threshold of the distance, as dlss_mask.comp) but last frame's depth at this
+// pixel agrees with this pixel's, the surface stayed on screen and its history is at this pixel.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D scene_depth;
+layout(binding = 1, rg16f) uniform writeonly image2D motion;
+layout(binding = 2) uniform sampler2D previous_depth;
+
+layout(push_constant, row_major) uniform Parameters {
+    mat4 clip_to_previous_clip;
+    float threshold;
+    uint mode;
+} params;
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 extent = imageSize(motion);
+    if (any(greaterThanEqual(pixel, extent))) {
+        return;
+    }
+    vec2 size = vec2(extent);
+    float depth = texelFetch(scene_depth, pixel, 0).r;
+    vec2 screen = (vec2(pixel) + 0.5) / size;
+    // Unjittered, [-1, 1] clip depth and a negative viewport height.
+    vec4 clip = vec4(screen * vec2(2, -2) + vec2(-1, 1), depth * 2 - 1, 1);
+    vec4 previous = params.clip_to_previous_clip * clip;
+    vec2 pixels = vec2(0);
+    if (depth >= 0 && depth <= 1 && previous.w > 1e-6) {
+        vec2 displacement = (previous.xy / previous.w - clip.xy) * vec2(0.5, -0.5) * size;
+        if (all(lessThanEqual(abs(displacement), vec2(65504)))) {
+            pixels = displacement;
+        }
+        if (params.mode == 1u && depth > 0.0 && depth < 1.0 && dot(pixels, pixels) > 0.25) {
+            float e = depth < 0.5 ? 1e-3 : -1e-3;
+            vec4 p2 = params.clip_to_previous_clip * vec4(clip.xy, (depth + e) * 2 - 1, 1);
+            float z1 = previous.z / previous.w, inv = 1.0 / previous.w - 1.0 / p2.w;
+            if (p2.w > 1e-6 && abs(inv) > 1e-12) {
+                float b = (z1 - p2.z / p2.w) / inv;   // d(ndc z) / d(1/w) along this pixel's ray: relative distance errors
+                ivec2 at = ivec2(floor(vec2(pixel) + 0.5 + pixels));
+                ivec2 hi = extent - 1;
+                float zr = texelFetch(previous_depth, clamp(at, ivec2(0), hi), 0).r * 2 - 1;   // where the motion points
+                float zs = texelFetch(previous_depth, pixel, 0).r * 2 - 1;                      // this same pixel
+                bool elsewhere = any(lessThan(at, ivec2(0))) || any(greaterThan(at, hi)) ||
+                                 abs(previous.w * (zr - z1) / b) > params.threshold;
+                bool stayed = abs(previous.w * (zs - (depth * 2 - 1)) / b) < params.threshold;
+                if (elsewhere && stayed) pixels = vec2(0);
+            }
+        }
+    }
+    imageStore(motion, pixel, vec4(pixels, 0, 0));
+}

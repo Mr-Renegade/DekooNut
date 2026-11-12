@@ -1,0 +1,65 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/BindlessElimination.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/BindlessElimination.cs
+@@ -68,6 +68,15 @@
+                 return false;
+             }
+ 
++            // NVN 2 materials: a sample through a handle read from a storage table. Runtime set 2 holds the pool (vk_exec_draw.c
++            // bindless). Images, buffers, multisample and 1D stay unsupported and read as zero.
++            SamplerType bindlessType = texOp.Type & SamplerType.Mask;
++            if (texOp.Inst.IsImage() || (texOp.Type & SamplerType.Multisample) != 0 ||
++                (bindlessType != SamplerType.Texture2D && bindlessType != SamplerType.Texture3D && bindlessType != SamplerType.TextureCube))
++            {
++                return false;
++            }
++
+             Operand bindlessHandle = texOp.GetSource(0);
+ 
+             if (bindlessHandle.AsgOp is PhiNode phi)
+@@ -76,7 +85,8 @@
+                 {
+                     Operand phiSource = phi.GetSource(srcIndex);
+ 
+-                    if (phiSource.AsgOp is not PhiNode && !IsBindlessAccessAllowed(phiSource))
++                    // A constant source is the path where the compiler skips the sample: its handle is never used.
++                    if (phiSource.Type != OperandType.Constant && phiSource.AsgOp != null && phiSource.AsgOp is not PhiNode && !IsBindlessAccessAllowed(phiSource))
+                     {
+                         return false;
+                     }
+@@ -143,6 +153,12 @@
+ 
+         private static bool IsBindlessAccessAllowed(Operand bindlessHandle)
+         {
++            // The compilers read the handle of the first active lane with SHFL (a waterfall): the load is behind the shuffle.
++            if (bindlessHandle.AsgOp is Operation shuffleOp && shuffleOp.Inst == Instruction.Shuffle)
++            {
++                bindlessHandle = shuffleOp.GetSource(0);
++            }
++
+             if (bindlessHandle.Type == OperandType.ConstantBuffer)
+             {
+                 // Bindless access with handles from constant buffer is allowed.
+--- a/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
+@@ -336,7 +336,20 @@
+             }
+             else
+             {
+-                if (arrayLength > 1 && (setIndex = _gpuAccessor.CreateExtraSet()) >= 0)
++                if (arrayLength == 32768 || arrayLength == 4096)
++                {
++                    // The whole pools, one fixed set shared by every shader (runtime vk_exec_draw.c bindless): a binding per
++                    // image kind, as a descriptor array has one view type.
++                    bool shadow = (type & SamplerType.Shadow) != 0, array = (type & SamplerType.Array) != 0;
++                    setIndex = 2;
++                    binding = arrayLength == 4096 ? 8 : (type & SamplerType.Mask) switch
++                    {
++                        SamplerType.Texture3D => 3,
++                        SamplerType.TextureCube => array ? 7 : shadow ? 6 : 2,
++                        _ => array ? (shadow ? 5 : 1) : (shadow ? 4 : 0),
++                    };
++                }
++                else if (arrayLength > 1 && (setIndex = _gpuAccessor.CreateExtraSet()) >= 0)
+                 {
+                     // We reserved an "extra set" for the array.
+                     // In this case the binding is always the first one (0).

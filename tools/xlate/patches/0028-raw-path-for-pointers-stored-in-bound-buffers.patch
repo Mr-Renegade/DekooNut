@@ -1,0 +1,108 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -501,7 +501,7 @@
+             }
+             // Only an address built from a pointer read from memory can miss every bound buffer on purpose. The pool table
+             // costs about 30 instructions per access, and the driver took 35 s over one shader with it behind every access.
+-            bool raw = AddressIsLoadedPointer(operation.GetSource(1));
++            bool raw = AddressIsLoadedPointer(operation.GetSource(1), candidates);
+             if (raw)
+             {
+                 candidates.Add(RawMarker);
+@@ -603,45 +603,70 @@
+ 
+         private const uint RawMarker = uint.MaxValue;   // in a candidate list: this function also has the raw path
+ 
+-        // The high word of an address based on a bound buffer comes from that buffer's constant bank entry. A pointer read
+-        // from memory has a high word with no constant buffer operand behind it, and a load on the way there.
+-        private static bool AddressIsLoadedPointer(Operand high)
++        // Whether an address can miss every bound buffer on purpose. An address based on a bound buffer takes its high word
++        // from that buffer's descriptor in c0, the word after one of the candidates. Anything else that reaches the high word
++        // is a pointer: a value read from memory, or one from a constant bank that holds no descriptor. A value read from
++        // memory ends the walk: the descriptor behind that read says where the pointer was stored, not where it points, and
++        // by now that read may be a Call. In arithmetic a descriptor wins, as a load beside it is an index on the carry; a
++        // Phi keeps what any of its paths has, since one path can be a loaded pointer and another a stale register.
++        private const int ReachesDescriptor = 1, ReachesPointer = 2;
++
++        private static bool AddressIsLoadedPointer(Operand high, List<uint> candidates)
++        {
++            return (HighWordSources(high, candidates, []) & ReachesPointer) != 0;
++        }
++
++        private static int HighWordSources(Operand operand, List<uint> candidates, Dictionary<Operand, int> seen)
+         {
+-            Queue<Operand> pending = new();
+-            HashSet<Operand> seen = [];
+-            bool load = false;
+-            pending.Enqueue(high);
+-            while (pending.TryDequeue(out Operand operand))
++            if (seen.TryGetValue(operand, out int known))
+             {
+-                if (!seen.Add(operand))
+-                {
+-                    continue;
+-                }
+-                if (seen.Count > 4096)
++                return known;
++            }
++            if (seen.Count > 4096)
++            {
++                return ReachesPointer;
++            }
++            seen[operand] = 0;   // a loop's Phi adds nothing through itself
++
++            int result = 0;
++
++            if (operand.Type == OperandType.ConstantBuffer)
++            {
++                int offset = operand.GetCbufOffset();
++                result = offset > 0 && candidates.Contains(PackCbSlotAndOffset(operand.GetCbufSlot(), offset - 1))
++                    ? ReachesDescriptor : ReachesPointer;
++            }
++            else if (operand.AsgOp is PhiNode phi)
++            {
++                for (int index = 0; index < phi.SourcesCount; index++)
+                 {
+-                    return true;
++                    result |= HighWordSources(phi.GetSource(index), candidates, seen);
+                 }
+-                if (operand.Type == OperandType.ConstantBuffer)
++            }
++            else if (operand.AsgOp is Operation definition)
++            {
++                if (definition.Inst == Instruction.Load || definition.Inst == Instruction.Call || definition.Inst.IsAtomic())
+                 {
+-                    return false;
++                    result = ReachesPointer;
+                 }
+-                if (operand.AsgOp is PhiNode phi)
++                else
+                 {
+-                    for (int index = 0; index < phi.SourcesCount; index++)
++                    bool descriptor = false;
++                    for (int index = 0; index < definition.SourcesCount; index++)
+                     {
+-                        pending.Enqueue(phi.GetSource(index));
++                        int source = HighWordSources(definition.GetSource(index), candidates, seen);
++                        descriptor |= source == ReachesDescriptor;
++                        result |= source;
+                     }
+-                }
+-                else if (operand.AsgOp is Operation definition)
+-                {
+-                    load |= definition.Inst == Instruction.Load;
+-                    for (int index = 0; index < definition.SourcesCount; index++)
++                    if (descriptor)
+                     {
+-                        pending.Enqueue(definition.GetSource(index));
++                        result = result == (ReachesDescriptor | ReachesPointer) ? ReachesDescriptor : result;
+                     }
+                 }
+             }
+-            return load;
++
++            seen[operand] = result;
++            return result;
+         }
+ 
+         private static void EmitRawGlobalAccess(

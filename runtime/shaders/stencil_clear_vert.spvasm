@@ -1,0 +1,37 @@
+; Original fullscreen triangle. VertexIndex 0,1,2 gives (-1,-1), (3,-1), (-1,3).
+; Depth tests and writes are disabled by the stencil-clear pipeline.
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Vertex %main "main" %index %position
+OpDecorate %index BuiltIn VertexIndex
+OpDecorate %position BuiltIn Position
+%void = OpTypeVoid
+%fn = OpTypeFunction %void
+%int = OpTypeInt 32 1
+%float = OpTypeFloat 32
+%v4 = OpTypeVector %float 4
+%pin = OpTypePointer Input %int
+%pout = OpTypePointer Output %v4
+%index = OpVariable %pin Input
+%position = OpVariable %pout Output
+%i1 = OpConstant %int 1
+%i2 = OpConstant %int 2
+%f0 = OpConstant %float 0
+%f1 = OpConstant %float 1
+%f2 = OpConstant %float 2
+%main = OpFunction %void None %fn
+%entry = OpLabel
+%i = OpLoad %int %index
+%shift = OpShiftLeftLogical %int %i %i1
+%xb = OpBitwiseAnd %int %shift %i2
+%yb = OpBitwiseAnd %int %i %i2
+%xf = OpConvertSToF %float %xb
+%yf = OpConvertSToF %float %yb
+%x2 = OpFMul %float %xf %f2
+%y2 = OpFMul %float %yf %f2
+%x = OpFSub %float %x2 %f1
+%y = OpFSub %float %y2 %f1
+%pos = OpCompositeConstruct %v4 %x %y %f0 %f1
+OpStore %position %pos
+OpReturn
+OpFunctionEnd

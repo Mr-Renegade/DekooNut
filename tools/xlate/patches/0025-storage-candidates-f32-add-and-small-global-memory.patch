@@ -1,0 +1,107 @@
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs
+@@ -236,10 +236,11 @@ namespace Ryujinx.Graphics.Shader.Instructions
+         {
+             if (storageKind == StorageKind.GlobalMemory &&
+                 context.TranslatorContext.GpuAccessor.QueryStorageBufferRuntimeCandidates() &&
++                !(type == AtomSize.F32FtzRn && op == AtomOp.Add) &&
+                 (type is not (AtomSize.S32 or AtomSize.U32) ||
+                  op is not (AtomOp.Add or AtomOp.Min or AtomOp.Max or AtomOp.And or AtomOp.Or or AtomOp.Xor or AtomOp.Exch)))
+             {
+-                throw new System.NotSupportedException("Storage candidates v1 supports only 32-bit integer atomics.");
++                throw new System.NotSupportedException("Storage candidates v1 supports 32-bit integer atomics and F32 add only.");
+             }
+             Operand res = Const(0);
+ 
+@@ -250,6 +251,10 @@ namespace Ryujinx.Graphics.Shader.Instructions
+                     {
+                         res = context.AtomicAdd(storageKind, e0, e1, value);
+                     }
++                    else if (type == AtomSize.F32FtzRn && storageKind == StorageKind.GlobalMemory)
++                    {
++                        res = EmitFloatAddLoop(context, e0, e1, value);
++                    }
+                     else
+                     {
+                         context.TranslatorContext.GpuAccessor.Log($"Invalid reduction type: {type}.");
+@@ -338,6 +343,23 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             return res;
+         }
+ 
++        // Floating point add on global memory, which SPIR-V has only behind VK_EXT_shader_atomic_float: a compare and
++        // swap loop on the word's bits, so it runs on every GPU. The compare is on bits, so a NaN in memory still ends it.
++        private static Operand EmitFloatAddLoop(EmitterContext context, Operand e0, Operand e1, Operand value)
++        {
++            Operand lblLoopHead = Label();
++
++            context.MarkLabel(lblLoopHead);
++
++            Operand oldValue = context.Load(StorageKind.GlobalMemory, e0, e1);
++            Operand newValue = context.FPAdd(oldValue, value);
++            Operand casResult = context.AtomicCompareAndSwap(StorageKind.GlobalMemory, e0, e1, oldValue, newValue);
++
++            context.BranchIfTrue(lblLoopHead, context.ICompareNotEqual(casResult, oldValue));
++
++            return oldValue;
++        }
++
+         private static void EmitLoad(
+             EmitterContext context,
+             StorageKind storageKind,
+@@ -398,9 +420,9 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             bool extended)
+         {
+             if (context.TranslatorContext.GpuAccessor.QueryStorageBufferRuntimeCandidates() &&
+-                size is not (LsSize.B32 or LsSize.B64 or LsSize.B128))
++                size == LsSize.UB128)
+             {
+-                throw new System.NotSupportedException("Storage candidates v1 supports naturally aligned B32/B64/B128 global loads only.");
++                throw new System.NotSupportedException("Storage candidates v1 does not support unaligned B128 global loads.");
+             }
+             // Naturally aligned 8/16-byte accesses cannot carry between their
+             // scalar words. Get40BitsAddress handles the initial offset carry;
+@@ -504,11 +526,6 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             int offset,
+             bool extended)
+         {
+-            if (context.TranslatorContext.GpuAccessor.QueryStorageBufferRuntimeCandidates() &&
+-                size is not (LsSize2.B32 or LsSize2.B64 or LsSize2.B128))
+-            {
+-                throw new System.NotSupportedException("Storage candidates v1 supports naturally aligned B32/B64/B128 global stores only.");
+-            }
+             if (size > LsSize2.B128)
+             {
+                 context.TranslatorContext.GpuAccessor.Log($"Invalid store size: {size}.");
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -417,10 +417,11 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+             GtsContext gtsContext, ResourceManager resourceManager, IGpuAccessor gpuAccessor,
+             TargetLanguage targetLanguage, BasicBlock block, Operation operation)
+         {
+-            if (operation.StorageKind != StorageKind.GlobalMemory ||
+-                (operation.Inst != Instruction.Load && operation.Inst != Instruction.Store && !operation.Inst.IsAtomic()))
++            if (!IsGlobalMemory(operation.StorageKind) ||
++                (operation.Inst != Instruction.Load && operation.Inst != Instruction.Store &&
++                 (!operation.Inst.IsAtomic() || IsSmallInt(operation.StorageKind))))
+             {
+-                throw new NotSupportedException("Storage candidates v1 supports aligned 32-bit global operations only.");
++                throw new NotSupportedException("Storage candidates v1 supports aligned global loads, stores and 32-bit atomics only.");
+             }
+ 
+             bool storageUnaligned = gpuAccessor.QueryHasUnalignedStorageBuffer();
+@@ -530,7 +531,14 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+                 Operand words = context.StorageBufferLength(binding);
+                 Operand inRange = context.BitwiseAnd(context.ICompareEqual(deltaHigh, Const(0)),
+                     context.ICompareLessUnsigned(word, words));
+-                inRange = context.BitwiseAnd(inRange, context.ICompareEqual(context.BitwiseAnd(deltaLow, Const(3)), Const(0)));
++                // TryGenerateStorageOp reaches bytes and halfwords through their word, so they need only their own alignment.
++                int misaligned = operation.StorageKind switch
++                {
++                    StorageKind.GlobalMemoryS8 or StorageKind.GlobalMemoryU8 => 0,
++                    StorageKind.GlobalMemoryS16 or StorageKind.GlobalMemoryU16 => 1,
++                    _ => 3,
++                };
++                inRange = context.BitwiseAnd(inRange, context.ICompareEqual(context.BitwiseAnd(deltaLow, Const(misaligned)), Const(0)));
+ 
+                 Operand skip = Label();
+                 context.BranchIfFalse(skip, inRange);

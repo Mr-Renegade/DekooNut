@@ -1,0 +1,77 @@
+diff -ru a/shader_recompiler/backend/spirv/emit_spirv.cpp b/shader_recompiler/backend/spirv/emit_spirv.cpp
+--- a/shader_recompiler/backend/spirv/emit_spirv.cpp	2026-11-08 22:53:01.884447755 -0600
++++ b/shader_recompiler/backend/spirv/emit_spirv.cpp	2026-11-08 22:53:23.441513944 -0600
+@@ -300,7 +300,9 @@
+         ctx.AddExecutionMode(main, spv::ExecutionMode::OutputVertices, program.mesh.max_vertices);
+         ctx.AddExecutionMode(main, spv::ExecutionMode::OutputPrimitivesEXT,
+                              program.mesh.max_primitives);
+-        ctx.AddExecutionMode(main, spv::ExecutionMode::OutputTrianglesEXT);
++        ctx.AddExecutionMode(main, program.mesh.topology == 1   ? spv::ExecutionMode::OutputPoints
++                                   : program.mesh.topology == 2 ? spv::ExecutionMode::OutputLinesEXT
++                                                                : spv::ExecutionMode::OutputTrianglesEXT);
+         break;
+     case Stage::TessellationControl:
+         execution_model = spv::ExecutionModel::TessellationControl;
+diff -ru a/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp b/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
+--- a/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp	2026-11-08 22:53:01.891293206 -0600
++++ b/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp	2026-11-08 22:53:23.441654179 -0600
+@@ -150,17 +150,19 @@
+     for (u32 first = 0; first < mesh.max_primitives; first += threads) {
+         const Id primitive{ctx.OpIAdd(ctx.U32[1], invocation, ctx.Const(first))};
+         If(ctx, ctx.OpULessThan(ctx.U1, primitive, count), [&] {
+-            // Vertex indices: map bytes 4 + 3 * primitive.
+-            const Id byte{ctx.OpIAdd(ctx.U32[1], ctx.OpIMul(ctx.U32[1], primitive, ctx.Const(3U)),
++            // Vertex indices: map bytes 4 + n * primitive, n = 1 points, 2 lines, 3 triangles.
++            const u32 n{mesh.topology == 1 ? 1U : mesh.topology == 2 ? 2U : 3U};
++            const Id byte{ctx.OpIAdd(ctx.U32[1], ctx.OpIMul(ctx.U32[1], primitive, ctx.Const(n)),
+                                      ctx.Const(4U))};
+             std::array<Id, 3> indices;
+-            for (u32 element = 0; element < 3; ++element) {
++            for (u32 element = 0; element < n; ++element) {
+                 const Id address{ctx.OpIAdd(ctx.U32[1], byte, ctx.Const(element))};
+                 indices[element] = ctx.OpLoad(ctx.U32[1], SharedWord(ctx, ctx.mesh_map, address));
+             }
+-            const Id output_indices{ctx.TypePointer(spv::StorageClass::Output, ctx.U32[3])};
++            const Id output_indices{ctx.TypePointer(spv::StorageClass::Output, ctx.U32[n])};
+             ctx.OpStore(ctx.OpAccessChain(output_indices, ctx.mesh_primitive_indices, primitive),
+-                        ctx.OpCompositeConstruct(ctx.U32[3], std::span<const Id>(indices)));
++                        n == 1 ? indices[0]
++                               : ctx.OpCompositeConstruct(ctx.U32[n], std::span<const Id>(indices.data(), n)));
+             CopyLines(ctx, primitive, ctx.mesh_primitive_base, primitive_lines,
+                       ctx.mesh_primitive_targets);
+         });
+diff -ru a/shader_recompiler/backend/spirv/spirv_emit_context.cpp b/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+--- a/shader_recompiler/backend/spirv/spirv_emit_context.cpp	2026-11-08 22:53:01.887992501 -0600
++++ b/shader_recompiler/backend/spirv/spirv_emit_context.cpp	2026-11-08 22:53:23.441614253 -0600
+@@ -1800,9 +1800,14 @@
+ 
+     const Id vertex_count{Const(mesh_info.max_vertices)};
+     const Id primitive_count{Const(mesh_info.max_primitives)};
+-    mesh_primitive_indices =
+-        DefineVariable(*this, TypeArray(U32[3], primitive_count),
+-                       spv::BuiltIn::PrimitiveTriangleIndicesEXT, spv::StorageClass::Output);
++    // One index per point, two per line, three per triangle (MeshInfo::topology 1, 2, 4)
++    const u32 primitive_vertices{mesh_info.topology == 1 ? 1U : mesh_info.topology == 2 ? 2U : 3U};
++    mesh_primitive_indices = DefineVariable(
++        *this, TypeArray(U32[primitive_vertices], primitive_count),
++        primitive_vertices == 1   ? spv::BuiltIn::PrimitivePointIndicesEXT
++        : primitive_vertices == 2 ? spv::BuiltIn::PrimitiveLineIndicesEXT
++                                  : spv::BuiltIn::PrimitiveTriangleIndicesEXT,
++        spv::StorageClass::Output);
+     std::array<Id, IR::NUM_GENERICS> generics[2]{};
+     Id point_size{}, primitive_layer{}, primitive_viewport{}, primitive_id_output{};
+     const auto per_primitive_builtin = [&](Id& variable, spv::BuiltIn builtin) {
+diff -ru a/shader_recompiler/frontend/maxwell/translate_program.cpp b/shader_recompiler/frontend/maxwell/translate_program.cpp
+--- a/shader_recompiler/frontend/maxwell/translate_program.cpp	2026-11-08 22:53:01.880679056 -0600
++++ b/shader_recompiler/frontend/maxwell/translate_program.cpp	2026-11-08 22:53:23.441452137 -0600
+@@ -411,7 +411,9 @@
+         const u32 threads{program.stage == Stage::Task ? init & 0x3f : (shader_b >> 20) & 0x3f};
+         program.workgroup_size = {(std::max)(threads, 1U), 1, 1};
+         if (program.stage == Stage::Mesh) {
+-            if (program.mesh.topology != 4) {
++            // 1 points, 2 lines, 4 triangles, from the NVN 2 control's output
++            // primitive vertex count (+0x5f), which tools/mesh/main.cpp puts in SET_MESH_SHADER_A's topology field.
++            if (program.mesh.topology != 1 && program.mesh.topology != 2 && program.mesh.topology != 4) {
+                 throw NotImplementedException("Mesh output topology {} (SET_MESH_SHADER_A {:#010x})",
+                                               program.mesh.topology, shader_a);
+             }

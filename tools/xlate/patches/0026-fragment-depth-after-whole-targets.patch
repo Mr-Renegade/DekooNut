@@ -1,0 +1,25 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
+@@ -160,8 +160,20 @@
+
+         internal int GetDepthRegister()
+         {
+-            // The depth register is always two registers after the last color output.
+-            return BitOperations.PopCount((uint)Definitions.OmapTargets) + 1;
++            // Every target with an output takes four registers, written or not (as the colour outputs below count them,
++            // and Eglantine's ExitFragment), and the depth comes two after them. Counting components instead read an
++            // unwritten register for a target with a partial mask: the depth was 0.
++            int targets = 0;
++
++            for (int rtIndex = 0; rtIndex < 8; rtIndex++)
++            {
++                if (((Definitions.OmapTargets >> (rtIndex * 4)) & 0xf) != 0)
++                {
++                    targets++;
++                }
++            }
++
++            return targets * 4 + 1;
+         }
+
+         public void SetLayerOutputAttribute(int attr)

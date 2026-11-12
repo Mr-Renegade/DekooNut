@@ -1,0 +1,388 @@
+diff --git a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/CodeGenContext.cs b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/CodeGenContext.cs
+index 3f80c2a..311fe59 100644
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/CodeGenContext.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/CodeGenContext.cs
+@@ -83,6 +83,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+         public bool IsMainFunction { get; private set; }
+         public bool MayHaveReturned { get; set; }
+         public bool WasNonUniformAccessDeclared { get; set; }
++        public bool WasDemoteDeclared { get; set; }   // OOT_XLATE_FIX bit 4: capability and extension once
+ 
+         public CodeGenContext(
+             StructuredProgramInfo info,
+diff --git a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+index a352d7a..9ff41d5 100644
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+@@ -505,8 +505,27 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             return GenerateUnaryFP32(context, operation, context.Delegates.DPdy);
+         }
+ 
++        private static void DeclareDemote(CodeGenContext context)
++        {
++            if (!context.WasDemoteDeclared)
++            {
++                context.AddExtension("SPV_EXT_demote_to_helper_invocation");
++                context.AddCapability(Capability.DemoteToHelperInvocationEXT);
++                context.WasDemoteDeclared = true;
++            }
++        }
++
+         private static OperationResult GenerateDiscard(CodeGenContext context, AstOperation operation)
+         {
++            // OOT_XLATE_FIX bit 4 (B-M3): demote to a helper invocation, as Lichii (emit_spirv_control_flow.cpp); the lane
++            // keeps running, so quad derivatives after a KIL stay defined. Discard is then no block end (XlateFix.DiscardEnds).
++            if (XlateFix.DemoteDiscard(context.Definitions.Stage))
++            {
++                DeclareDemote(context);
++                context.DemoteToHelperInvocationEXT();
++                return OperationResult.Invalid;
++            }
++
+             context.Kill();
+             return OperationResult.Invalid;
+         }
+@@ -1219,8 +1238,14 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             SpvInstruction one = context.Constant(context.TypeFP32(), 1.0f);
+             SpvInstruction minusOne = context.Constant(context.TypeFP32(), -1.0f);
+             SpvInstruction zero = context.Constant(context.TypeFP32(), 0.0f);
+-            SpvInstruction xLut = context.ConstantComposite(v4float, one, minusOne, one, zero);
+-            SpvInstruction yLut = context.ConstantComposite(v4float, one, one, minusOne, one);
++            // OOT_XLATE_FIX bit 5 (B-M4): Lichii's tables (spirv_emit_context.cpp fswzadd_lut_a/b), the negation of these.
++            bool lichiiLut = XlateFix.On(XlateFix.SwizzleAddSign);
++            SpvInstruction xLut = lichiiLut
++                ? context.ConstantComposite(v4float, minusOne, one, minusOne, zero)
++                : context.ConstantComposite(v4float, one, minusOne, one, zero);
++            SpvInstruction yLut = lichiiLut
++                ? context.ConstantComposite(v4float, minusOne, minusOne, one, minusOne)
++                : context.ConstantComposite(v4float, one, one, minusOne, one);
+ 
+             SpvInstruction three = context.Constant(context.TypeU32(), 3);
+ 
+@@ -1291,7 +1316,18 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                         {
+                             elems[index] = Src(AggregateType.S32);
+ 
+-                            if (!intCoords)
++                            // OOT_XLATE_FIX bit 6 (B-M5): the layer is the low 16 bits, unsigned, as in Lichii
++                            // (texture_fetch.cpp ConvertUToF(32, 16), texture_load.cpp BitFieldExtract(0, 16)).
++                            if (XlateFix.On(XlateFix.ArrayLayer16))
++                            {
++                                elems[index] = context.BitwiseAnd(context.TypeS32(), elems[index], context.Constant(context.TypeS32(), 0xffff));
++
++                                if (!intCoords)
++                                {
++                                    elems[index] = context.ConvertUToF(context.TypeFP32(), elems[index]);
++                                }
++                            }
++                            else if (!intCoords)
+                             {
+                                 elems[index] = context.ConvertSToF(context.TypeFP32(), elems[index]);
+                             }
+@@ -1360,7 +1396,8 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                 // 16-bit precision before the compare; Vulkan drivers may compare the full float (AMD does), so a lit
+                 // surface fails its own compare by a fraction of a step and the whole face reads as shadowed. Array
+                 // compares only: in TotK those are the D16 cascades (MacNativeGames 6283599 rounds the same ones).
+-                if (isArray)
++                // OOT_XLATE_FIX bit 1 (B-M2): Lichii passes the reference unchanged; so does this unless the bit is off.
++                if (isArray && !XlateFix.On(XlateFix.ShadowRefExact))
+                 {
+                     SpvInstruction d16Fp32 = context.TypeFP32();
+                     SpvInstruction d16Clamped = context.GlslFClamp(d16Fp32, dRef, context.Constant(d16Fp32, 0f), context.Constant(d16Fp32, 1f));
+@@ -1765,6 +1802,15 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+ 
+         private static OperationResult GenerateLoadOrStore(CodeGenContext context, AstOperation operation, bool isStore)
+         {
++            // SR_THREAD_KILL after a demote: HelperInvocation is not updated by OpDemoteToHelperInvocation, ask directly.
++            if (!isStore && operation.StorageKind == StorageKind.Input && operation.SourcesCount == 1 &&
++                operation.GetSource(0) is AstOperand killVar && killVar.Type == OperandType.Constant &&
++                (IoVariable)killVar.Value == IoVariable.ThreadKill && XlateFix.DemoteDiscard(context.Definitions.Stage))
++            {
++                DeclareDemote(context);
++                return new OperationResult(AggregateType.Bool, context.IsHelperInvocationEXT(context.TypeBool()));
++            }
++
+             SpvInstruction pointer = GetStoragePointer(context, operation, out AggregateType varType);
+ 
+             // A load or store through a physical storage buffer pointer must state its alignment (a 32-bit word).
+diff --git a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs
+index 4c77e4a..eea43cf 100644
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs
+@@ -45,6 +45,15 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+ 
+             context.AddCapability(Capability.Shader);
+ 
++            // OOT_XLATE_FIX bit 3 (B-G1): as Lichii (emit_spirv.cpp SetupSignedNanCapabilities), the driver must keep
++            // NaN, Inf and -0 of FP32 math; the unordered compares (ordered | isnan) depend on it. The runtime clears the
++            // bit when the device lacks shaderSignedZeroInfNanPreserveFloat32.
++            if (XlateFix.On(XlateFix.FloatControls))
++            {
++                context.AddExtension("SPV_KHR_float_controls");
++                context.AddCapability(Capability.SignedZeroInfNanPreserve);
++            }
++
+             if (context.Properties.UsesPhysicalPointers)
+             {
+                 context.AddCapability(Capability.PhysicalStorageBufferAddresses);
+@@ -184,9 +193,10 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+ 
+             Generate(context, function.MainBlock);
+ 
+-            // Functions must always end with a return.
++            // Functions must always end with a return (a demoting Discard is no terminator, OOT_XLATE_FIX bit 4).
+             if (function.MainBlock.Last is not AstOperation operation ||
+-                (operation.Inst != Instruction.Return && operation.Inst != Instruction.Discard))
++                (operation.Inst != Instruction.Return &&
++                 (operation.Inst != Instruction.Discard || XlateFix.DemoteDiscard(context.Definitions.Stage))))
+             {
+                 context.Return();
+             }
+@@ -197,6 +207,11 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             {
+                 context.AddEntryPoint(context.Definitions.Stage.Convert(), spvFunc, "main", context.GetMainInterface());
+ 
++                if (XlateFix.On(XlateFix.FloatControls))
++                {
++                    context.AddExecutionMode(spvFunc, ExecutionMode.SignedZeroInfNanPreserve, (SpvLiteralInteger)32);
++                }
++
+                 if (context.Definitions.Stage == ShaderStage.TessellationControl)
+                 {
+                     context.AddExecutionMode(spvFunc, ExecutionMode.OutputVertices, (SpvLiteralInteger)context.Definitions.ThreadsPerInputPrimitive);
+@@ -381,7 +396,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                         // We only need a branch if the last instruction didn't
+                         // already cause the program to exit or jump elsewhere.
+                         bool lastIsCf = e.Block.Last is AstOperation lastOp &&
+-                            (lastOp.Inst == Instruction.Discard ||
++                            ((lastOp.Inst == Instruction.Discard && !XlateFix.DemoteDiscard(context.Definitions.Stage)) ||
+                              lastOp.Inst == Instruction.LoopBreak ||
+                              lastOp.Inst == Instruction.LoopContinue ||
+                              lastOp.Inst == Instruction.Return);
+diff --git a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitConversion.cs b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitConversion.cs
+index 3c99e3e..178c9b9 100644
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitConversion.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitConversion.cs
+@@ -70,7 +70,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
+ 
+             Operand src = GetSrcReg(context, op.SrcB);
+ 
+-            EmitI2F(context, op.ISrcFmt, op.DstFmt, src, op.ByteSel, op.Dest, op.AbsB, op.NegB);
++            EmitI2F(context, op.ISrcFmt, op.DstFmt, src, op.ByteSel, op.Dest, op.AbsB, op.NegB, op.RoundMode);
+         }
+ 
+         public static void I2fI(EmitterContext context)
+@@ -79,7 +79,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
+ 
+             Operand src = GetSrcImm(context, Imm20ToSInt(op.Imm20));
+ 
+-            EmitI2F(context, op.ISrcFmt, op.DstFmt, src, op.ByteSel, op.Dest, op.AbsB, op.NegB);
++            EmitI2F(context, op.ISrcFmt, op.DstFmt, src, op.ByteSel, op.Dest, op.AbsB, op.NegB, op.RoundMode);
+         }
+ 
+         public static void I2fC(EmitterContext context)
+@@ -88,7 +88,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
+ 
+             Operand src = GetSrcCbuf(context, op.CbufSlot, op.CbufOffset);
+ 
+-            EmitI2F(context, op.ISrcFmt, op.DstFmt, src, op.ByteSel, op.Dest, op.AbsB, op.NegB);
++            EmitI2F(context, op.ISrcFmt, op.DstFmt, src, op.ByteSel, op.Dest, op.AbsB, op.NegB, op.RoundMode);
+         }
+ 
+         public static void I2iR(EmitterContext context)
+@@ -212,6 +212,31 @@ namespace Ryujinx.Graphics.Shader.Instructions
+                 srcB = context.FPMaximum(srcB, Bound(isSignedInt ? sbyte.MinValue : byte.MinValue), fpType);
+                 srcB = context.FPMinimum(srcB, Bound(isSignedInt ? sbyte.MaxValue : byte.MaxValue), fpType);
+             }
++            else if (XlateFix.On(XlateFix.F2iClamp) && srcType != DstFmt.F64)
++            {
++                // OOT_XLATE_FIX bit 9 (A-M3): as Lichii (floating_point_conversion_integer.cpp): clamp in float to the
++                // destination's bounds (the same float constants, so the same driver result at the top end), convert,
++                // and a signed destination gives 0 for NaN.
++                (float lo, float hi) = dstType switch
++                {
++                    IDstFmt.S16 => ((float)short.MinValue, (float)short.MaxValue),
++                    IDstFmt.U16 => (0f, (float)ushort.MaxValue),
++                    _ => isSignedInt ? ((float)int.MinValue, (float)int.MaxValue) : (0f, (float)uint.MaxValue),
++                };
++
++                Operand clamped = context.FPMinimum(context.FPMaximum(srcB, ConstF(lo), fpType), ConstF(hi), fpType);
++                Operand converted = isSignedInt ? context.FP32ConvertToS32(clamped) : context.FP32ConvertToU32(clamped);
++
++                if (isSignedInt)
++                {
++                    converted = context.ConditionalSelect(context.IsNan(srcB, fpType), Const(0), converted);
++                }
++
++                context.Copy(GetDest(rd), converted);
++
++                // TODO: CC.
++                return;
++            }
+             else if (!isSignedInt)
+             {
+                 // Negative float to uint cast is undefined, so we clamp the value before conversion.
+@@ -258,7 +283,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             ByteSel byteSelection,
+             int rd,
+             bool absolute,
+-            bool negate)
++            bool negate,
++            RoundMode roundMode = RoundMode.Rn)
+         {
+             bool isSignedInt =
+                 srcType is ISrcFmt.S8 or
+@@ -290,6 +316,18 @@ namespace Ryujinx.Graphics.Shader.Instructions
+                     ? context.IConvertS32ToFP64(srcB)
+                     : context.IConvertU32ToFP64(srcB);
+             }
++            else if (XlateFix.On(XlateFix.I2fRz) && !isSignedInt && !isSmallInt && dstType == DstFmt.F32 && roundMode == RoundMode.Rz)
++            {
++                // OOT_XLATE_FIX bit 8 (A-M2): U32 to F32 toward zero, built from the bits as Lichii does
++                // (integer_floating_point_conversion.cpp ConvertUnsigned32ToFloatRZ); OpConvertUToF rounds to nearest.
++                Operand msb = context.FindMSBU32(srcB);                                     // -1 for 0
++                Operand shift = context.ISubtract(context.IMaximumS32(msb, Const(23)), Const(23));
++                Operand retained = context.ShiftRightU32(srcB, shift);
++                Operand bits = context.BitwiseOr(context.ShiftLeft(context.IAdd(msb, Const(127)), Const(23)),
++                    context.BitwiseAnd(retained, Const(0x7fffff)));
++                Operand exact = context.IConvertU32ToFP32(context.BitwiseAnd(srcB, Const(0xffffff)));
++                srcB = context.ConditionalSelect(context.ICompareGreater(msb, Const(23)), bits, exact);
++            }
+             else
+             {
+                 srcB = isSignedInt
+diff --git a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs
+index 391d4ed..83c577e 100644
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs
+@@ -602,7 +602,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
+                 // In candidate mode the high word participates in the bounds
+                 // check. A signed negative immediate contributes -1 in addition
+                 // to the low-word unsigned carry. Keep the legacy path intact.
+-                if (context.TranslatorContext.GpuAccessor.QueryStorageBufferRuntimeCandidates() && offset < 0)
++                // OOT_XLATE_FIX bit 10 (A-M4): in every stage, as Lichii's signed 64-bit add (load_store_memory.cpp).
++                if ((XlateFix.On(XlateFix.GlobalNegHigh) || context.TranslatorContext.GpuAccessor.QueryStorageBufferRuntimeCandidates()) && offset < 0)
+                 {
+                     addrHigh = context.IAdd(addrHigh, Const(-1));
+                 }
+diff --git a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitTexture.cs b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitTexture.cs
+index fa0b873..6d8728a 100644
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitTexture.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitTexture.cs
+@@ -918,7 +918,19 @@ namespace Ryujinx.Graphics.Shader.Instructions
+ 
+                         res = context.FPMultiply(res, ConstF(256.0f));
+ 
+-                        Operand fixedPointValue = context.FP32ConvertToS32(res);
++                        Operand fixedPointValue;
++
++                        // OOT_XLATE_FIX bit 7 (B-M6): as Lichii (texture_mipmap_level.cpp), component 0 signed and
++                        // component 1 unsigned, each masked to 16 bits.
++                        if (XlateFix.On(XlateFix.TmmlMask))
++                        {
++                            fixedPointValue = compIndex == 0 ? context.FP32ConvertToS32(res) : context.FP32ConvertToU32(res);
++                            fixedPointValue = context.BitwiseAnd(fixedPointValue, Const(0xffff));
++                        }
++                        else
++                        {
++                            fixedPointValue = context.FP32ConvertToS32(res);
++                        }
+ 
+                         context.Copy(d, fixedPointValue);
+                     }
+diff --git a/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/BasicBlock.cs b/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/BasicBlock.cs
+index d3eae31..5303cd4 100644
+--- a/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/BasicBlock.cs
++++ b/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/BasicBlock.cs
+@@ -80,9 +80,10 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
+                 case Instruction.Branch:
+                 case Instruction.BranchIfFalse:
+                 case Instruction.BranchIfTrue:
+-                case Instruction.Discard:
+                 case Instruction.Return:
+                     return true;
++                case Instruction.Discard:
++                    return Translation.XlateFix.DiscardEnds;   // a demote (OOT_XLATE_FIX bit 4) is no control flow
+                 default:
+                     return false;
+             }
+diff --git a/src/Ryujinx.Graphics.Shader/Translation/ControlFlowGraph.cs b/src/Ryujinx.Graphics.Shader/Translation/ControlFlowGraph.cs
+index 1df45a4..d54df53 100644
+--- a/src/Ryujinx.Graphics.Shader/Translation/ControlFlowGraph.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/ControlFlowGraph.cs
+@@ -164,9 +164,10 @@ namespace Ryujinx.Graphics.Shader.Translation
+                 switch (operation.Inst)
+                 {
+                     case Instruction.Branch:
+-                    case Instruction.Discard:
+                     case Instruction.Return:
+                         return true;
++                    case Instruction.Discard:
++                        return XlateFix.DiscardEnds;   // a demote (OOT_XLATE_FIX bit 4) falls through
+                 }
+             }
+ 
+diff --git a/src/Ryujinx.Graphics.Shader/Translation/XlateFix.cs b/src/Ryujinx.Graphics.Shader/Translation/XlateFix.cs
+new file mode 100644
+index 0000000..cd023a4
+--- /dev/null
++++ b/src/Ryujinx.Graphics.Shader/Translation/XlateFix.cs
+@@ -0,0 +1,58 @@
++using System;
++using System.Globalization;
++
++namespace Ryujinx.Graphics.Shader.Translation
++{
++    // OOT_XLATE_FIX: translator mismatches against Lichii (docs/XLATE-AUDIT.md "Fixes", docs/xlate-audit-A.md, -B.md),
++    // one bit each, all on by default. A set bit does what Lichii does. A job's "xlate_fix" (the runtime sends the mask
++    // its device supports) overrides the environment variable. Bit 0 lives in the Ampere lowering (runtime side).
++    public static class XlateFix
++    {
++        public const uint RedNegative = 1u << 0;       // A-M1, lower_to_maxwell.h (not read here)
++        public const uint ShadowRefExact = 1u << 1;    // B-M2, array depth compare reference not rounded to 16 bits
++        public const uint NoFmz = 1u << 2;             // B-M1, no FMZ experiment on FP32 multiply/FMA
++        public const uint FloatControls = 1u << 3;     // B-G1, SignedZeroInfNanPreserve 32
++        public const uint Demote = 1u << 4;            // B-M3, KIL demotes to a helper invocation
++        public const uint SwizzleAddSign = 1u << 5;    // B-M4, FSWZADD with Lichii's lookup tables
++        public const uint ArrayLayer16 = 1u << 6;      // B-M5, texture array layer = low 16 bits, unsigned
++        public const uint TmmlMask = 1u << 7;          // B-M6, TMML: S32 & 0xffff, U32 & 0xffff
++        public const uint I2fRz = 1u << 8;             // A-M2, I2F.F32.U32.RZ truncates
++        public const uint F2iClamp = 1u << 9;          // A-M3, F2I clamps in float, signed NaN -> 0
++        public const uint GlobalNegHigh = 1u << 10;    // A-M4, negative global offset borrows from the high word
++        public const uint All = (1u << 11) - 1;
++
++        private static readonly uint _env = Parse(Environment.GetEnvironmentVariable("OOT_XLATE_FIX"), All);
++
++        [ThreadStatic]
++        private static uint? _job;
++
++        public static uint Mask => _job ?? _env;
++
++        public static bool On(uint bit) => (Mask & bit) != 0;
++
++        public static void SetJob(uint? mask) => _job = mask;
++
++        // Discard (KIL) is a demote rather than a block end: IR side (ControlFlowGraph, BasicBlock) and SPIR-V side.
++        public static bool DiscardEnds => !On(Demote);
++
++        public static bool DemoteDiscard(ShaderStage stage) => stage == ShaderStage.Fragment && On(Demote);
++
++        // Decimal or 0x-hex; empty or unreadable gives the default.
++        public static uint Parse(string text, uint fallback)
++        {
++            if (string.IsNullOrWhiteSpace(text))
++            {
++                return fallback;
++            }
++
++            text = text.Trim();
++
++            if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
++            {
++                return uint.TryParse(text.AsSpan(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint hex) ? hex & All : fallback;
++            }
++
++            return uint.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out uint dec) ? dec & All : fallback;
++        }
++    }
++}

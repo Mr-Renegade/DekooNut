@@ -1,0 +1,305 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -499,6 +499,14 @@
+                     $"{operation.Inst}@{operation.Index} ({operation.StorageKind}); address: " +
+                     string.Join(" <- ", addressTrace));
+             }
++            // Only an address built from a pointer read from memory can miss every bound buffer on purpose. The pool table
++            // costs about 30 instructions per access, and the driver took 35 s over one shader with it behind every access.
++            bool raw = AddressIsLoadedPointer(operation.GetSource(1));
++            if (raw)
++            {
++                candidates.Add(RawMarker);
++            }
++
+             if (gtsContext.TryGetFunctionId(operation, true, candidates, out int functionId, guarded: true))
+             {
+                 return functionId;
+@@ -512,6 +520,11 @@
+ 
+             foreach (uint packed in candidates)
+             {
++                if (packed == RawMarker)
++                {
++                    continue;
++                }
++
+                 (int slot, int offset) = UnpackCbSlotAndOffset(packed);
+                 bool write = operation.Inst == Instruction.Store || operation.Inst.IsAtomic();
+                 if (!resourceManager.TryGetStorageBufferBinding(slot, offset, write, out int binding, guarded: true))
+@@ -560,6 +573,11 @@
+                 context.MarkLabel(skip);
+             }
+ 
++            if (raw)
++            {
++                EmitRawGlobalAccess(context, resourceManager, operation, arguments, low, high);
++            }
++
+             bool returnsValue = operation.Dest != null;
+             if (returnsValue)
+             {
+@@ -574,6 +592,178 @@
+             return gtsContext.AddFunction(operation, true, candidates, function, guarded: true);
+         }
+ 
++        // Sentinel constant buffer slot of the host's memory pool table (runtime/vk_exec_draw.c gmem_info). A guest address
++        // that matched no bound buffer is a raw pointer the shader read from memory: Ocarina of Time's foliage chain keeps
++        // its lists and allocators behind such pointers, and dropping those stores left every indirect record empty.
++        // Adapted from nxnative GlobalToStorage.TryGenerateRawStorageOp (MIT): no chunk hints and no write log here.
++        // Table: entries of 8 words {start, end, delta}, sorted by start; entry 0 starts at 0 and is empty.
++        public const int GmemMapCbSlot = 0x7e;
++        private const int GmemMapLog2 = 13;
++        private const int GmemMapEntryWords = 8;
++
++        private const uint RawMarker = uint.MaxValue;   // in a candidate list: this function also has the raw path
++
++        // The high word of an address based on a bound buffer comes from that buffer's constant bank entry. A pointer read
++        // from memory has a high word with no constant buffer operand behind it, and a load on the way there.
++        private static bool AddressIsLoadedPointer(Operand high)
++        {
++            Queue<Operand> pending = new();
++            HashSet<Operand> seen = [];
++            bool load = false;
++            pending.Enqueue(high);
++            while (pending.TryDequeue(out Operand operand))
++            {
++                if (!seen.Add(operand))
++                {
++                    continue;
++                }
++                if (seen.Count > 4096)
++                {
++                    return true;
++                }
++                if (operand.Type == OperandType.ConstantBuffer)
++                {
++                    return false;
++                }
++                if (operand.AsgOp is PhiNode phi)
++                {
++                    for (int index = 0; index < phi.SourcesCount; index++)
++                    {
++                        pending.Enqueue(phi.GetSource(index));
++                    }
++                }
++                else if (operand.AsgOp is Operation definition)
++                {
++                    load |= definition.Inst == Instruction.Load;
++                    for (int index = 0; index < definition.SourcesCount; index++)
++                    {
++                        pending.Enqueue(definition.GetSource(index));
++                    }
++                }
++            }
++            return load;
++        }
++
++        private static void EmitRawGlobalAccess(
++            EmitterContext context,
++            ResourceManager resourceManager,
++            Operation operation,
++            int arguments,
++            Operand addrLow,
++            Operand addrHigh)
++        {
++            bool isSmall = IsSmallInt(operation.StorageKind);
++
++            if ((isSmall && operation.Inst.IsAtomic()) ||
++                !resourceManager.TryGetStorageBufferBinding(GmemMapCbSlot, 0, write: false, out int mapBinding))
++            {
++                return;
++            }
++
++            resourceManager.Properties.UsesPhysicalPointers = true;
++
++            Operand MapWord(Operand entry, int word)
++            {
++                return context.Load(StorageKind.StorageBuffer, mapBinding, Const(0), context.IAdd(entry, Const(word)));
++            }
++
++            // The last entry whose start is at or below the address.
++            Operand index = Const(0);
++
++            for (int step = 1 << (GmemMapLog2 - 1); step != 0; step >>= 1)
++            {
++                Operand candidate = context.IAdd(index, Const(step));
++                Operand entry = context.IMultiply(candidate, Const(GmemMapEntryWords));
++                Operand startLow = MapWord(entry, 0);
++                Operand startHigh = MapWord(entry, 1);
++
++                Operand atOrBelow = context.BitwiseOr(
++                    context.ICompareLessUnsigned(startHigh, addrHigh),
++                    context.BitwiseAnd(context.ICompareEqual(startHigh, addrHigh), context.ICompareLessOrEqualUnsigned(startLow, addrLow)));
++
++                index = context.ConditionalSelect(atOrBelow, candidate, index);
++            }
++
++            Operand found = context.IMultiply(index, Const(GmemMapEntryWords));
++            Operand endLow = MapWord(found, 2);
++            Operand endHigh = MapWord(found, 3);
++
++            Operand inPool = context.BitwiseOr(
++                context.ICompareLessUnsigned(addrHigh, endHigh),
++                context.BitwiseAnd(context.ICompareEqual(addrHigh, endHigh), context.ICompareLessUnsigned(addrLow, endLow)));
++
++            Operand lblSkip = Label();
++            context.BranchIfFalse(lblSkip, inPool);
++
++            // A small integer is read or written in its 32-bit word.
++            Operand wordLow = isSmall ? context.BitwiseAnd(addrLow, Const(~3)) : addrLow;
++            Operand hostLow = context.IAdd(wordLow, MapWord(found, 4));
++            Operand carry = context.ConditionalSelect(context.ICompareLessUnsigned(hostLow, wordLow), Const(1), Const(0));
++            Operand hostHigh = context.IAdd(context.IAdd(addrHigh, MapWord(found, 5)), carry);
++
++            Operand resultValue = null;
++
++            if (operation.Inst == Instruction.Load)
++            {
++                resultValue = context.Load(StorageKind.GlobalMemory, hostLow, hostHigh);
++
++                if (isSmall)
++                {
++                    Operand bitOffset = HelperFunctionManager.GetBitOffset(context, addrLow);
++
++                    resultValue = operation.StorageKind switch
++                    {
++                        StorageKind.GlobalMemoryS8 => context.BitfieldExtractS32(context.ShiftRightS32(resultValue, bitOffset), Const(0), Const(8)),
++                        StorageKind.GlobalMemoryS16 => context.BitfieldExtractS32(context.ShiftRightS32(resultValue, bitOffset), Const(0), Const(16)),
++                        StorageKind.GlobalMemoryU8 => context.BitwiseAnd(context.ShiftRightU32(resultValue, bitOffset), Const(byte.MaxValue)),
++                        _ => context.BitwiseAnd(context.ShiftRightU32(resultValue, bitOffset), Const(ushort.MaxValue)),
++                    };
++                }
++            }
++            else if (operation.Inst == Instruction.Store)
++            {
++                Operand value = Argument(2);
++
++                if (isSmall)
++                {
++                    int bitSize = operation.StorageKind is StorageKind.GlobalMemoryS8 or StorageKind.GlobalMemoryU8 ? 8 : 16;
++                    Operand bitOffset = HelperFunctionManager.GetBitOffset(context, addrLow);
++
++                    Operand lblLoopHead = Label();
++                    context.MarkLabel(lblLoopHead);
++
++                    Operand oldValue = context.Load(StorageKind.GlobalMemory, hostLow, hostHigh);
++                    Operand newValue = context.BitfieldInsert(oldValue, value, bitOffset, Const(bitSize));
++                    Operand casResult = context.AtomicCompareAndSwap(StorageKind.GlobalMemory, hostLow, hostHigh, oldValue, newValue);
++
++                    context.BranchIfTrue(lblLoopHead, context.ICompareNotEqual(casResult, oldValue));
++                }
++                else
++                {
++                    context.Store(StorageKind.GlobalMemory, hostLow, hostHigh, value);
++                }
++            }
++            else if (operation.Inst == Instruction.AtomicCompareAndSwap)
++            {
++                resultValue = context.AtomicCompareAndSwap(StorageKind.GlobalMemory, hostLow, hostHigh, Argument(2), Argument(3));
++            }
++            else
++            {
++                resultValue = context.Add(operation.Inst, StorageKind.GlobalMemory, Local(), hostLow, hostHigh, Argument(2));
++            }
++
++            if (resultValue != null)
++            {
++                context.Return(resultValue);
++            }
++            else
++            {
++                context.Return();
++            }
++
++            context.MarkLabel(lblSkip);
++        }
++
+         private static bool CanUseInlineStorageOp(Operation operation, TargetLanguage targetLanguage)
+         {
+             if (operation.StorageKind != StorageKind.GlobalMemory)
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+@@ -1707,14 +1707,27 @@
+         {
+             SpvInstruction pointer = GetStoragePointer(context, operation, out AggregateType varType);
+ 
++            // A load or store through a physical storage buffer pointer must state its alignment (a 32-bit word).
++            bool physical = operation.StorageKind == StorageKind.GlobalMemory;
++
+             if (isStore)
+             {
+-                context.Store(pointer, context.Get(varType, operation.GetSource(operation.SourcesCount - 1)));
++                SpvInstruction store = context.Store(pointer, context.Get(varType, operation.GetSource(operation.SourcesCount - 1)),
++                    physical ? MemoryAccessMask.Aligned : (MemoryAccessMask)int.MaxValue);
++                if (physical)
++                {
++                    store.AddOperand((SpvLiteralInteger)4);
++                }
+                 return OperationResult.Invalid;
+             }
+             else
+             {
+-                SpvInstruction result = context.Load(context.GetType(varType), pointer);
++                SpvInstruction result = context.Load(context.GetType(varType), pointer,
++                    physical ? MemoryAccessMask.Aligned : (MemoryAccessMask)int.MaxValue);
++                if (physical)
++                {
++                    result.AddOperand((SpvLiteralInteger)4);
++                }
+                 return new OperationResult(varType, result);
+             }
+         }
+@@ -1731,6 +1744,19 @@
+ 
+             switch (storageKind)
+             {
++                case StorageKind.GlobalMemory:
++                    // An address the pool table already moved to the host's device address (GlobalToStorage.EmitRawGlobalAccess).
++                    SpvInstruction addressWords = context.CompositeConstruct(
++                        context.TypeVector(context.TypeU32(), 2),
++                        context.Get(AggregateType.U32, operation.GetSource(0)),
++                        context.Get(AggregateType.U32, operation.GetSource(1)));
++
++                    varType = AggregateType.U32;
++
++                    return context.ConvertUToPtr(
++                        context.TypePointer(StorageClass.PhysicalStorageBuffer, context.TypeU32()),
++                        context.Bitcast(context.TypeInt(64, 0), addressWords));
++
+                 case StorageKind.ConstantBuffer:
+                 case StorageKind.StorageBuffer:
+                     if (operation.GetSource(srcIndex++) is not AstOperand bindingIndex || bindingIndex.Type != OperandType.Constant)
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs
+@@ -45,7 +45,17 @@
+ 
+             context.AddCapability(Capability.Shader);
+ 
+-            context.SetMemoryModel(AddressingModel.Logical, MemoryModel.GLSL450);
++            if (context.Properties.UsesPhysicalPointers)
++            {
++                context.AddCapability(Capability.PhysicalStorageBufferAddresses);
++                context.AddCapability(Capability.Int64);
++                context.AddExtension("SPV_KHR_physical_storage_buffer");
++                context.SetMemoryModel(AddressingModel.PhysicalStorageBuffer64, MemoryModel.GLSL450);
++            }
++            else
++            {
++                context.SetMemoryModel(AddressingModel.Logical, MemoryModel.GLSL450);
++            }
+ 
+             context.AddCapability(Capability.GroupNonUniformBallot);
+             context.AddCapability(Capability.GroupNonUniformShuffle);
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/ShaderProperties.cs
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/ShaderProperties.cs
+@@ -18,6 +18,9 @@
+         public IReadOnlyDictionary<int, MemoryDefinition> LocalMemories => _localMemories;
+         public IReadOnlyDictionary<int, MemoryDefinition> SharedMemories => _sharedMemories;
+ 
++        // A global access that matched no bound storage buffer goes through a physical storage buffer pointer.
++        public bool UsesPhysicalPointers { get; set; }
++
+         public ShaderProperties()
+         {
+             _constantBuffers = new Dictionary<int, BufferDefinition>();

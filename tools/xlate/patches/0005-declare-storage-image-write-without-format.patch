@@ -1,0 +1,36 @@
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Declarations.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Declarations.cs
+@@ -225,6 +225,8 @@
+ 
+         private static void DeclareImages(CodeGenContext context, IEnumerable<TextureDefinition> images)
+         {
++            bool writeWithoutFormat = false;
++
+             foreach (TextureDefinition image in images)
+             {
+                 int setIndex = context.TargetApi == TargetApi.Vulkan ? image.Set : 0;
+@@ -240,6 +242,12 @@
+                     AccessQualifier.ReadWrite,
+                     GetImageFormat(image.Format));
+ 
++                // TOTK (2026-10-20): an image declared without a format (QueryHostSupportsImageLoadFormatted) that the
++                // shader stores to needs StorageImageWriteWithoutFormat; upstream never declares it, so spirv-val rejects
++                // 22 agl_technique_pfx compute shaders with formatted SUST. Vulkan's shaderStorageImageWriteWithoutFormat
++                // feature backs it. Reads without a format need no capability under Vulkan 1.3 (format feature flags 2).
++                writeWithoutFormat |= image.Format == TextureFormat.Unknown && image.Flags.HasFlag(TextureUsageFlags.ImageStore);
++
+                 SpvInstruction imagePointerType = context.TypePointer(StorageClass.UniformConstant, imageType);
+                 SpvInstruction imageArrayPointerType = imagePointerType;
+ 
+@@ -269,6 +277,11 @@
+ 
+                 context.AddGlobalVariable(imageVariable);
+             }
++
++            if (writeWithoutFormat)
++            {
++                context.AddCapability(Capability.StorageImageWriteWithoutFormat);
++            }
+         }
+ 
+         private static Dim GetDim(SamplerType type)

@@ -1,0 +1,107 @@
+diff --git a/src/Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs b/src/Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs
+index 94dd2e1..e9817b9 100644
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs
+@@ -32,7 +32,10 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+                         // ran with only the leader active: every warp reserved 1 slot and stored all its entries, so warps
+                         // overwrote each other's list entries at random (the foliage flicker).
+                         bool pinned = sideEffects || ReadsOtherLanes(assignment.Source);
+-                        bool isWorthPropagating = !pinned && (propVar.Uses.Count == 1 || IsWorthPropagating(assignment.Source));
++                        // OoT (2026-11-06, from ocarina-of-time-recomp patch 0017): in a tensor program a load that reads
++                        // writable memory stays where it is: moved to its use, it could read a store that came between.
++                        bool isWorthPropagating = !pinned && !(Translation.TensorProgram.Active && ReadsWritableMemory(assignment.Source)) &&
++                            (propVar.Uses.Count == 1 || IsWorthPropagating(assignment.Source));
+ 
+                         // TOTK: SPIR-V passes call arguments by pointer to a variable (StructuredProgram copies them
+                         // into temporaries); folding an expression into a call argument breaks GenerateCall.
+@@ -56,6 +59,33 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+             RemoveEmptyBlocks(mainBlock);
+         }
+ 
++        private static bool ReadsWritableMemory(IAstNode node)
++        {
++            if (node is not AstOperation op)
++            {
++                return false;
++            }
++
++            Instruction inst = op.Inst & Instruction.Mask;
++
++            if (inst == Instruction.ImageLoad ||
++                (inst == Instruction.Load && op.StorageKind is not (StorageKind.None or StorageKind.ConstantBuffer) &&
++                 !op.StorageKind.IsInputOrOutput()))
++            {
++                return true;
++            }
++
++            for (int index = 0; index < op.SourcesCount; index++)
++            {
++                if (ReadsWritableMemory(op.GetSource(index)))
++                {
++                    return true;
++                }
++            }
++
++            return false;
++        }
++
+         private static bool ReadsOtherLanes(IAstNode source)
+         {
+             if (source is AstOperation op)
+diff --git a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/Optimizer.cs b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/Optimizer.cs
+index 96a235d..c3b5f71 100644
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/Optimizer.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/Optimizer.cs
+@@ -390,7 +390,11 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+                         // result is unused, so its sources are still live: stripping their use lists here made the next
+                         // DCE pass delete the whole chain feeding a global-memory atomic turned into a helper call, which
+                         // then read an uninitialised value (TOTK's sun-visibility kernel; our c7830fac lost its atomicMin).
+-                        if (!HasSideEffects(src.AsgOp))
++                        // OoT (2026-11-06, from ocarina-of-time-recomp patch 0013): in a tensor program, only into a
++                        // producer dead through every destination. SHFL defines a value and a validity predicate;
++                        // dropping the dead predicate copy reached the shuffle, still live through its value, and
++                        // stripped the use lists of its lane index, so the next pass deleted the index computation.
++                        if (TensorProgram.Active ? IsUnused(src.AsgOp) : !HasSideEffects(src.AsgOp))
+                         {
+                             nodes.Enqueue(src.AsgOp);
+                         }
+diff --git a/src/Ryujinx.Graphics.Shader/Translation/Transforms/ShufflePass.cs b/src/Ryujinx.Graphics.Shader/Translation/Transforms/ShufflePass.cs
+index 9cb361e..7602e41 100644
+--- a/src/Ryujinx.Graphics.Shader/Translation/Transforms/ShufflePass.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Transforms/ShufflePass.cs
+@@ -30,14 +30,33 @@ namespace Ryujinx.Graphics.Shader.Translation.Transforms
+                 return node;
+             }
+ 
+-            int functionId = context.Hfm.GetOrCreateShuffleFunctionId(functionName, context.GpuAccessor.QueryHostSubgroupSize());
+-
+             Operand result = operation.GetDest(0);
+             Operand valid = operation.GetDest(1);
+             Operand value = operation.GetSource(0);
+             Operand index = operation.GetSource(1);
+             Operand mask = operation.GetSource(2);
+ 
++            // OoT (2026-11-06, from ocarina-of-time-recomp patch 0015): in a tensor program, SHFL.IDX with the plain
++            // mask (clamp 31, no segment) on a 32-lane subgroup is the subgroup shuffle itself. The helper call costs
++            // about fifteen SPIR-V instructions, and the LDSM and MOVM lowerings make hundreds of them.
++            if (TensorProgram.Active && functionName == HelperFunctionName.Shuffle &&
++                mask.Type == OperandType.Constant && (mask.Value & 0x1f) == 0x1f && ((mask.Value >> 8) & 0x1f) == 0 &&
++                context.GpuAccessor.QueryHostSubgroupSize() == 32)
++            {
++                operation.Dest = null;
++
++                Operand lane = Local();
++                LinkedListNode<INode> andNode = node.List.AddBefore(node, new Operation(Instruction.BitwiseAnd, lane, [index, Const(31)]));
++                node.List.AddBefore(node, new Operation(Instruction.Shuffle, 0, result, [value, lane]));
++                node.List.AddBefore(node, new Operation(Instruction.Copy, valid, [Const(-1)]));
++
++                Utils.DeleteNode(node, operation);
++
++                return andNode;
++            }
++
++            int functionId = context.Hfm.GetOrCreateShuffleFunctionId(functionName, context.GpuAccessor.QueryHostSubgroupSize());
++
+             operation.Dest = null;
+ 
+             Operand[] callArgs = [Const(functionId), value, index, mask, valid];

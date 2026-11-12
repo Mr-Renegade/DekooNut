@@ -1,0 +1,33 @@
+#version 460
+// ind_clamp (vk_exec_draw.c): checks an indirect record copied into the clamp ring before it is read. A record with an
+// axis over max_axis or more than max_total groups is zeroed and counted in the host-visible counter. mode 1: a mesh
+// launch record (only x is the game's). mode 2: a VkDrawIndexedIndirectCommand; only index and instance counts are checked.
+#extension GL_EXT_buffer_reference : require
+layout(local_size_x = 1) in;
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer Rec { uint v[5]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer Cnt { uint n; uint slot; uint x; uint y; uint z; };
+layout(push_constant) uniform P { Rec rec; Cnt cnt; uint mode; uint slot; uint max_axis; uint max_total; } p;
+void main() {
+    if (p.mode == 2u) {
+        uint ic = p.rec.v[0], inst = p.rec.v[1];
+        uint mi = p.max_total * 16u, mt = p.max_total;
+        bool bad = ic > mi || inst > mt || (inst != 0u && ic > (mt * 256u) / inst);
+        if (bad) {
+            atomicAdd(p.cnt.n, 1u);
+            p.cnt.slot = p.slot, p.cnt.x = ic, p.cnt.y = inst, p.cnt.z = 0xffffffffu;
+            p.rec.v[0] = 0u, p.rec.v[1] = 0u;
+        }
+        return;
+    }
+    uint x = p.rec.v[0], y = p.mode == 1u ? 1u : p.rec.v[1], z = p.mode == 1u ? 1u : p.rec.v[2];
+    uint yz = (y <= p.max_axis && z <= p.max_axis) ? y * z : 0xffffffffu;   // max_axis <= 65535: no overflow
+    bool bad = x > p.max_axis || y > p.max_axis || z > p.max_axis || (yz != 0u && x > p.max_total / yz);
+    if (bad) {
+        atomicAdd(p.cnt.n, 1u);
+        p.cnt.slot = p.slot, p.cnt.x = x, p.cnt.y = y, p.cnt.z = z;
+        x = 0u;
+        y = p.mode == 1u ? 1u : 0u;
+        z = y;
+    }
+    p.rec.v[0] = x, p.rec.v[1] = y, p.rec.v[2] = z;
+}

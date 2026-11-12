@@ -1,0 +1,11 @@
+# Code patches for The Legend of Zelda: Ocarina of Time 1.1.1 main (recomp/patches.py). Each original word is checked against main.
+
+set grpcengine OOT_SKIP_GRPC_ENGINE 1
+
+# The game embeds gRPC. Its poller selection (GRPC_POLL_STRATEGY, default "all") tries each event engine in turn and calls
+# abort() (main+0x21f0c7c) when none initializes: main+0x21f0c44 loads the chosen engine and main+0x21f0c48 branches to the
+# abort when it is null. The engines need file descriptors for waking the poller (eventfd, poll), which a host with no network
+# cannot give, so every one fails and the game would stop at start. Loading a nonzero value instead keeps that branch from
+# being taken and takes the success path (free the temporary string, return): gRPC stays without an engine, which only
+# matters to online features. (Patched sites may not be branches, so the load is patched and the branch is left alone.)
+site grpcengine main 21f0c44 f9407ee8 d2800028   # ldr x8, [x23, #0xf8] -> mov x8, #1

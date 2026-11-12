@@ -1,0 +1,13 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
+@@ -66,7 +66,9 @@
+             _stagePrefix = GetShaderStagePrefix(stage);
+ 
+             _cbSlotToBindingMap = new SetBindingPair[18];
+-            _sbSlotToBindingMap = new SetBindingPair[16];
++            // DKB: 32 storage buffers per stage, not Maxwell's 16. Switch 2 compute shaders read up to 25 base addresses
++            // from the driver bank (c0 0x60 + 16 r); past 16 the rest of their global accesses were dropped.
++            _sbSlotToBindingMap = new SetBindingPair[32];
+             _cbSlotToBindingMap.AsSpan().Fill(new(-1, -1));
+             _sbSlotToBindingMap.AsSpan().Fill(new(-1, -1));
+ 

@@ -1,0 +1,218 @@
+--- a/src/Ryujinx.Graphics.Shader/Decoders/RegisterConsts.cs
++++ b/src/Ryujinx.Graphics.Shader/Decoders/RegisterConsts.cs
+@@ -5,7 +5,10 @@
+         public const int GprsCount = 255;
+         public const int PredsCount = 7;
+         public const int FlagsCount = 4;
+-        public const int TotalCount = GprsCount + PredsCount + FlagsCount;
++        // The registers of the Ampere lowering's bank 1 (register_pressure.h): Gpr indexes from ShadowBase.
++        public const int ShadowBase = 256;
++        public const int ShadowCount = 256;
++        public const int TotalCount = GprsCount + PredsCount + FlagsCount + ShadowCount;
+ 
+         public const int RegisterZeroIndex = GprsCount;
+         public const int PredicateTrueIndex = PredsCount;
+--- a/src/Ryujinx.Graphics.Shader/Translation/Ssa.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Ssa.cs
+@@ -344,7 +344,7 @@
+         {
+             if (reg.Type == RegisterType.Gpr)
+             {
+-                return reg.Index;
++                return reg.Index >= RegisterConsts.ShadowBase ? GprsAndPredsCount + RegisterConsts.FlagsCount + reg.Index - RegisterConsts.ShadowBase : reg.Index;
+             }
+             else if (reg.Type == RegisterType.Predicate)
+             {
+@@ -366,9 +366,13 @@
+             {
+                 return new Register(key - RegisterConsts.GprsCount, RegisterType.Predicate);
+             }
++            else if (key < GprsAndPredsCount + RegisterConsts.FlagsCount)
++            {
++                return new Register(key - GprsAndPredsCount, RegisterType.Flag);
++            }
+             else /* if (key < RegisterConsts.TotalCount) */
+             {
+-                return new Register(key - GprsAndPredsCount, RegisterType.Flag);
++                return new Register(key - GprsAndPredsCount - RegisterConsts.FlagsCount + RegisterConsts.ShadowBase, RegisterType.Gpr);
+             }
+         }
+     }
+--- a/src/Ryujinx.Graphics.Shader/Translation/RegisterUsage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/RegisterUsage.cs
+@@ -9,10 +9,10 @@
+ {
+     static class RegisterUsage
+     {
+-        private const int RegsCount = 256;
++        private const int RegsCount = 512;
+         private const int RegsMask = RegsCount - 1;
+ 
+-        private const int GprMasks = 4;
++        private const int GprMasks = 8;
+         private const int PredMasks = 1;
+         private const int FlagMasks = 1;
+         private const int TotalMasks = GprMasks + PredMasks + FlagMasks;
+@@ -23,15 +23,23 @@
+             public long GprMask1 { get; set; }
+             public long GprMask2 { get; set; }
+             public long GprMask3 { get; set; }
++            public long GprMask4 { get; set; }
++            public long GprMask5 { get; set; }
++            public long GprMask6 { get; set; }
++            public long GprMask7 { get; set; }
+             public long PredMask { get; set; }
+             public long FlagMask { get; set; }
+ 
+-            public RegisterMask(long gprMask0, long gprMask1, long gprMask2, long gprMask3, long predMask, long flagMask)
++            public RegisterMask(long gprMask0, long gprMask1, long gprMask2, long gprMask3, long gprMask4, long gprMask5, long gprMask6, long gprMask7, long predMask, long flagMask)
+             {
+                 GprMask0 = gprMask0;
+                 GprMask1 = gprMask1;
+                 GprMask2 = gprMask2;
+                 GprMask3 = gprMask3;
++                GprMask4 = gprMask4;
++                GprMask5 = gprMask5;
++                GprMask6 = gprMask6;
++                GprMask7 = gprMask7;
+                 PredMask = predMask;
+                 FlagMask = flagMask;
+             }
+@@ -44,8 +52,12 @@
+                     1 => GprMask1,
+                     2 => GprMask2,
+                     3 => GprMask3,
+-                    4 => PredMask,
+-                    5 => FlagMask,
++                    4 => GprMask4,
++                    5 => GprMask5,
++                    6 => GprMask6,
++                    7 => GprMask7,
++                    8 => PredMask,
++                    9 => FlagMask,
+                     _ => throw new ArgumentOutOfRangeException(nameof(index)),
+                 };
+             }
+@@ -57,6 +69,10 @@
+                     x.GprMask1 & y.GprMask1,
+                     x.GprMask2 & y.GprMask2,
+                     x.GprMask3 & y.GprMask3,
++                    x.GprMask4 & y.GprMask4,
++                    x.GprMask5 & y.GprMask5,
++                    x.GprMask6 & y.GprMask6,
++                    x.GprMask7 & y.GprMask7,
+                     x.PredMask & y.PredMask,
+                     x.FlagMask & y.FlagMask);
+             }
+@@ -68,6 +84,10 @@
+                     x.GprMask1 | y.GprMask1,
+                     x.GprMask2 | y.GprMask2,
+                     x.GprMask3 | y.GprMask3,
++                    x.GprMask4 | y.GprMask4,
++                    x.GprMask5 | y.GprMask5,
++                    x.GprMask6 | y.GprMask6,
++                    x.GprMask7 | y.GprMask7,
+                     x.PredMask | y.PredMask,
+                     x.FlagMask | y.FlagMask);
+             }
+@@ -79,6 +99,10 @@
+                     ~x.GprMask1,
+                     ~x.GprMask2,
+                     ~x.GprMask3,
++                    ~x.GprMask4,
++                    ~x.GprMask5,
++                    ~x.GprMask6,
++                    ~x.GprMask7,
+                     ~x.PredMask,
+                     ~x.FlagMask);
+             }
+@@ -104,13 +128,17 @@
+                        GprMask1 == other.GprMask1 &&
+                        GprMask2 == other.GprMask2 &&
+                        GprMask3 == other.GprMask3 &&
++                       GprMask4 == other.GprMask4 &&
++                       GprMask5 == other.GprMask5 &&
++                       GprMask6 == other.GprMask6 &&
++                       GprMask7 == other.GprMask7 &&
+                        PredMask == other.PredMask &&
+                        FlagMask == other.FlagMask;
+             }
+ 
+             public readonly override int GetHashCode()
+             {
+-                return HashCode.Combine(GprMask0, GprMask1, GprMask2, GprMask3, PredMask, FlagMask);
++                return HashCode.Combine(HashCode.Combine(GprMask0, GprMask1, GprMask2, GprMask3), HashCode.Combine(GprMask4, GprMask5, GprMask6, GprMask7), PredMask, FlagMask);
+             }
+         }
+ 
+@@ -174,7 +202,7 @@
+             RegisterMask[] globalOutputs = new RegisterMask[cfg.Blocks.Length];
+ 
+             RegisterMask allOutputs = new();
+-            RegisterMask allCmnOutputs = new(-1L, -1L, -1L, -1L, -1L, -1L);
++            RegisterMask allCmnOutputs = new(-1L, -1L, -1L, -1L, -1L, -1L, -1L, -1L, -1L, -1L);
+ 
+             bool modified;
+ 
+@@ -348,7 +376,7 @@
+ 
+         private static RegisterMask GetMask(Register register)
+         {
+-            Span<long> gprMasks = stackalloc long[4];
++            Span<long> gprMasks = stackalloc long[GprMasks];
+             long predMask = 0;
+             long flagMask = 0;
+ 
+@@ -365,7 +393,7 @@
+                     break;
+             }
+ 
+-            return new RegisterMask(gprMasks[0], gprMasks[1], gprMasks[2], gprMasks[3], predMask, flagMask);
++            return new RegisterMask(gprMasks[0], gprMasks[1], gprMasks[2], gprMasks[3], gprMasks[4], gprMasks[5], gprMasks[6], gprMasks[7], predMask, flagMask);
+         }
+ 
+         private static bool Exchange(RegisterMask[] masks, int blkIndex, RegisterMask value)
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMove.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMove.cs
+@@ -1,3 +1,4 @@
++using System;
+ using Ryujinx.Graphics.Shader.Decoders;
+ using Ryujinx.Graphics.Shader.IntermediateRepresentation;
+ using Ryujinx.Graphics.Shader.Translation;
+@@ -9,9 +10,36 @@
+ {
+     static partial class InstEmit
+     {
++        [ThreadStatic] private static Operand[] _bank2;
++
+         public static void MovR(EmitterContext context)
+         {
+             InstMovR op = context.GetOp<InstMovR>();
++
++            // The Ampere lowering's register_pressure.h NativeRegisterCopy: quad mask 0, 10 at bit 44, the banks where SrcB would be.
++            // Bank 1 keeps the guest's high registers, whose numbers bank 0 uses for uniform registers. Bank 2 saves a borrowed low
++            // register around one instruction. Without the banks the restore does nothing and the borrowed register keeps the high value.
++            ulong raw = context.CurrOp.RawOpCode;
++            if (op.QuadMask == 0 && ((raw >> 44) & 0xf) == 10)
++            {
++                int dstBank = (int)((raw >> 8) & 3), srcBank = (int)((raw >> 10) & 3);
++                if (dstBank == 2)
++                {
++                    _bank2 ??= new Operand[256];
++                    _bank2[op.Dest] = context.Copy(GetSrcReg(context, op.SrcA));
++                }
++                else if (srcBank == 2)
++                {
++                    context.Copy(GetDest(op.Dest), _bank2[op.SrcA]);
++                }
++                else
++                {
++                    Operand dst = dstBank == 1 ? Register(RegisterConsts.ShadowBase + op.Dest, RegisterType.Gpr) : GetDest(op.Dest);
++                    Operand src = srcBank == 1 ? Register(RegisterConsts.ShadowBase + op.SrcA, RegisterType.Gpr) : GetSrcReg(context, op.SrcA);
++                    context.Copy(dst, src);
++                }
++                return;
++            }
+ 
+             context.Copy(GetDest(op.Dest), GetSrcReg(context, op.SrcA));
+         }

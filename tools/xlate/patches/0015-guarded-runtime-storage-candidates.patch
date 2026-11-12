@@ -1,0 +1,445 @@
+--- a/src/Ryujinx.Graphics.Shader/BufferUsageFlags.cs
++++ b/src/Ryujinx.Graphics.Shader/BufferUsageFlags.cs
+@@ -14,5 +14,9 @@
+         /// Buffer is written to.
+         /// </summary>
+         Write = 1 << 0,
++
++        // The host must bind the real resolved descriptor range, or a one-byte
++        // invalid range (runtime-array word count zero), never a legacy fallback.
++        Guarded = 1 << 7,
+     }
+ }
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+@@ -98,6 +98,7 @@
+             Add(Instruction.ImageStore,               GenerateImageStore);
+             Add(Instruction.IsNan,                    GenerateIsNan);
+             Add(Instruction.Load,                     GenerateLoad);
++            Add(Instruction.StorageBufferLength,      GenerateStorageBufferLength);
+             Add(Instruction.Lod,                      GenerateLod);
+             Add(Instruction.LogarithmB2,              GenerateLogarithmB2);
+             Add(Instruction.LogicalAnd,               GenerateLogicalAnd);
+@@ -851,6 +852,17 @@
+             return new OperationResult(AggregateType.Bool, result);
+         }
+ 
++        private static OperationResult GenerateStorageBufferLength(CodeGenContext context, AstOperation operation)
++        {
++            if (operation.GetSource(0) is not AstOperand { Type: OperandType.Constant } binding)
++            {
++                throw new InvalidOperationException("Storage-buffer length requires a constant binding.");
++            }
++
++            return new OperationResult(AggregateType.U32,
++                context.ArrayLength(context.TypeU32(), context.StorageBuffers[binding.Value], (SpvLiteralInteger)0));
++        }
++
+         private static OperationResult GenerateLoad(CodeGenContext context, AstOperation operation)
+         {
+             return GenerateLoadOrStore(context, operation, isStore: false);
+--- a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
++++ b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+@@ -156,6 +156,10 @@
+         {
+             return false;
+         }
++
++        // Explicit ABI opt-in. Other clients and backends retain the legacy pass.
++        bool QueryStorageBufferRuntimeCandidates() => false;
++        bool QueryHostSupportsStorageBufferArrayLength() => false;
+ 
+         /// <summary>
+         /// Queries whenever the current draw uses unaligned storage buffer addresses.
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmit.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmit.cs
+@@ -9,6 +9,10 @@
+         {
+             context.GetOp<InstAtomCas>();
+ 
++            if (context.TranslatorContext.GpuAccessor.QueryStorageBufferRuntimeCandidates())
++            {
++                throw new System.NotSupportedException("Storage candidates v1 does not implement AtomCas.");
++            }
+             context.TranslatorContext.GpuAccessor.Log("Shader instruction AtomCas is not implemented.");
+         }
+ 
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs
+@@ -234,6 +234,13 @@
+             Operand e1,
+             Operand value)
+         {
++            if (storageKind == StorageKind.GlobalMemory &&
++                context.TranslatorContext.GpuAccessor.QueryStorageBufferRuntimeCandidates() &&
++                (type is not (AtomSize.S32 or AtomSize.U32) ||
++                 op is not (AtomOp.Add or AtomOp.Min or AtomOp.Max or AtomOp.And or AtomOp.Or or AtomOp.Xor or AtomOp.Exch)))
++            {
++                throw new System.NotSupportedException("Storage candidates v1 supports only 32-bit integer atomics.");
++            }
+             Operand res = Const(0);
+ 
+             switch (op)
+@@ -390,6 +397,15 @@
+             int offset,
+             bool extended)
+         {
++            if (context.TranslatorContext.GpuAccessor.QueryStorageBufferRuntimeCandidates() &&
++                size is not (LsSize.B32 or LsSize.B64 or LsSize.B128))
++            {
++                throw new System.NotSupportedException("Storage candidates v1 supports naturally aligned B32/B64/B128 global loads only.");
++            }
++            // Naturally aligned 8/16-byte accesses cannot carry between their
++            // scalar words. Get40BitsAddress handles the initial offset carry;
++            // the guarded path bounds each emitted word independently. This
++            // does not define out-of-range vector behavior or atomic stores.
+             int count = GetVectorCount(size);
+             StorageKind storageKind = GetStorageKind(size);
+ 
+@@ -488,6 +504,11 @@
+             int offset,
+             bool extended)
+         {
++            if (context.TranslatorContext.GpuAccessor.QueryStorageBufferRuntimeCandidates() &&
++                size is not (LsSize2.B32 or LsSize2.B64 or LsSize2.B128))
++            {
++                throw new System.NotSupportedException("Storage candidates v1 supports naturally aligned B32/B64/B128 global stores only.");
++            }
+             if (size > LsSize2.B128)
+             {
+                 context.TranslatorContext.GpuAccessor.Log($"Invalid store size: {size}.");
+@@ -561,6 +582,13 @@
+             {
+                 Operand carry = context.ICompareLessUnsigned(addrLow, offs);
+ 
++                // In candidate mode the high word participates in the bounds
++                // check. A signed negative immediate contributes -1 in addition
++                // to the low-word unsigned carry. Keep the legacy path intact.
++                if (context.TranslatorContext.GpuAccessor.QueryStorageBufferRuntimeCandidates() && offset < 0)
++                {
++                    addrHigh = context.IAdd(addrHigh, Const(-1));
++                }
+                 addrHigh = context.IAdd(addrHigh, context.ConditionalSelect(carry, Const(1), Const(0)));
+             }
+ 
+--- a/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/Instruction.cs
++++ b/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/Instruction.cs
+@@ -126,6 +126,8 @@
+         VoteAllEqual,
+         VoteAny,
+ 
++        StorageBufferLength,
++
+         Count,
+ 
+         FP32 = 1 << 16,
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/InstructionInfo.cs
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/InstructionInfo.cs
+@@ -91,6 +91,7 @@
+             Add(Instruction.ImageAtomic,              AggregateType.S32);
+             Add(Instruction.IsNan,                    AggregateType.Bool,   AggregateType.Scalar);
+             Add(Instruction.Load,                     AggregateType.FP32);
++            Add(Instruction.StorageBufferLength,      AggregateType.U32, AggregateType.S32);
+             Add(Instruction.Lod,                      AggregateType.FP32);
+             Add(Instruction.LogarithmB2,              AggregateType.Scalar, AggregateType.Scalar);
+             Add(Instruction.LogicalAnd,               AggregateType.Bool,   AggregateType.Bool,    AggregateType.Bool);
+--- a/src/Ryujinx.Graphics.Shader/Translation/EmitterContextInsts.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/EmitterContextInsts.cs
+@@ -684,6 +684,11 @@
+             return context.Add(fpType | Instruction.IsNan, Local(), a);
+         }
+ 
++        public static Operand StorageBufferLength(this EmitterContext context, int binding)
++        {
++            return context.Add(Instruction.StorageBufferLength, Local(), Const(binding));
++        }
++
+         public static Operand Load(this EmitterContext context, StorageKind storageKind, Operand e0, Operand e1)
+         {
+             return context.Add(Instruction.Load, storageKind, Local(), e0, e1);
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -25,6 +25,7 @@
+                 public readonly Instruction Inst;
+                 public readonly StorageKind StorageKind;
+                 public readonly bool IsMultiTarget;
++                public readonly bool Guarded;
+                 public readonly IReadOnlyList<uint> TargetCbs;
+ 
+                 public Entry(
+@@ -32,13 +33,14 @@
+                     Instruction inst,
+                     StorageKind storageKind,
+                     bool isMultiTarget,
+-                    IReadOnlyList<uint> targetCbs)
++                    IReadOnlyList<uint> targetCbs, bool guarded)
+                 {
+                     FunctionId = functionId;
+                     Inst = inst;
+                     StorageKind = storageKind;
+                     IsMultiTarget = isMultiTarget;
+                     TargetCbs = targetCbs;
++                    Guarded = guarded;
+                 }
+             }
+ 
+@@ -82,22 +84,23 @@
+                 _hfm = hfm;
+             }
+ 
+-            public int AddFunction(Operation baseOp, bool isMultiTarget, IReadOnlyList<uint> targetCbs, Function function)
++            public int AddFunction(Operation baseOp, bool isMultiTarget, IReadOnlyList<uint> targetCbs, Function function, bool guarded = false)
+             {
+                 int functionId = _hfm.AddFunction(function);
+ 
+-                _entries.Add(new Entry(functionId, baseOp.Inst, baseOp.StorageKind, isMultiTarget, targetCbs));
++                _entries.Add(new Entry(functionId, baseOp.Inst, baseOp.StorageKind, isMultiTarget, targetCbs, guarded));
+ 
+                 return functionId;
+             }
+ 
+-            public bool TryGetFunctionId(Operation baseOp, bool isMultiTarget, List<uint> targetCbs, out int functionId)
++            public bool TryGetFunctionId(Operation baseOp, bool isMultiTarget, List<uint> targetCbs, out int functionId, bool guarded = false)
+             {
+                 foreach (Entry entry in _entries)
+                 {
+                     if (entry.Inst != baseOp.Inst ||
+                         entry.StorageKind != baseOp.StorageKind ||
+                         entry.IsMultiTarget != isMultiTarget ||
++                        entry.Guarded != guarded ||
+                         entry.TargetCbs.Count != targetCbs.Count)
+                     {
+                         continue;
+@@ -213,6 +216,11 @@
+             IGpuAccessor gpuAccessor,
+             TargetLanguage targetLanguage)
+         {
++            if (gpuAccessor.QueryStorageBufferRuntimeCandidates() &&
++                (targetLanguage != TargetLanguage.Spirv || !gpuAccessor.QueryHostSupportsStorageBufferArrayLength()))
++            {
++                throw new NotSupportedException("Storage candidates require the SPIR-V array-length backend.");
++            }
+             GtsContext gtsContext = new(hfm);
+ 
+             foreach (BasicBlock block in blocks)
+@@ -311,6 +319,12 @@
+         {
+             Operation operation = node.Value as Operation;
+             Operand globalAddress = operation.GetSource(0);
++            if (gpuAccessor.QueryStorageBufferRuntimeCandidates())
++            {
++                int functionId = GenerateGuardedStorageOp(gtsContext, resourceManager, gpuAccessor,
++                    targetLanguage, block, operation);
++                return GenerateCallStorageOp(node, operation, null, functionId);
++            }
+             SearchResult result = FindUniqueBaseAddressCb(gtsContext, block, globalAddress, needsOffset: true);
+ 
+             if (result.Found)
+@@ -393,6 +407,151 @@
+ 
+                 return GenerateCallStorageOp(node, operation, null, functionId);
+             }
++        }
++
++        // Runtime ABI v1: candidates are possibilities, never a static claim that
++        // a cbuf value is a pointer. Keep the legacy preferred base first, then
++        // inspect alternatives in stable IR order. A zero-length descriptor is
++        // invalid; the host must not bind its legacy 64-KiB zero fallback here.
++        private static int GenerateGuardedStorageOp(
++            GtsContext gtsContext, ResourceManager resourceManager, IGpuAccessor gpuAccessor,
++            TargetLanguage targetLanguage, BasicBlock block, Operation operation)
++        {
++            if (operation.StorageKind != StorageKind.GlobalMemory ||
++                (operation.Inst != Instruction.Load && operation.Inst != Instruction.Store && !operation.Inst.IsAtomic()))
++            {
++                throw new NotSupportedException("Storage candidates v1 supports aligned 32-bit global operations only.");
++            }
++
++            bool storageUnaligned = gpuAccessor.QueryHasUnalignedStorageBuffer();
++            int alignment = storageUnaligned ? gpuAccessor.QueryHostStorageBufferOffsetAlignment() : 1;
++            if (storageUnaligned && (alignment < 4 || (alignment & (alignment - 1)) != 0))
++            {
++                throw new InvalidOperationException("Storage candidates require power-of-two descriptor alignment >= 4.");
++            }
++
++            List<uint> candidates = [];
++            void AddCandidate(SearchResult result)
++            {
++                if (!result.Found || result.SbCbSlot < 0 || result.SbCbSlot >= 18 ||
++                    result.SbCbOffset < 0 || result.SbCbOffset >= 0x3fff || (result.SbCbOffset & 1) != 0)
++                {
++                    return;
++                }
++                uint packed = PackCbSlotAndOffset(result.SbCbSlot, result.SbCbOffset);
++                if (!candidates.Contains(packed))
++                {
++                    candidates.Add(packed);
++                }
++            }
++
++            AddCandidate(FindUniqueBaseAddressCb(gtsContext, block, operation.GetSource(0), needsOffset: false));
++            Queue<(Operand Value, BasicBlock Block)> pending = new();
++            HashSet<Operand> seen = [];
++            pending.Enqueue((operation.GetSource(0), block));
++            while (pending.TryDequeue(out var current))
++            {
++                Operand operand = current.Value;
++                if (!seen.Add(operand))
++                {
++                    continue;
++                }
++                if (seen.Count > 65536)
++                {
++                    throw new NotSupportedException("Storage-candidate expression exceeds the traversal limit.");
++                }
++
++                AddCandidate(FindUniqueBaseAddressCb(gtsContext, current.Block, operand, needsOffset: false));
++                if (operand.Type == OperandType.ConstantBuffer)
++                {
++                    AddCandidate(new SearchResult(operand.GetCbufSlot(), operand.GetCbufOffset()));
++                }
++                else if (operand.AsgOp is PhiNode phi)
++                {
++                    for (int index = 0; index < phi.SourcesCount; index++)
++                    {
++                        pending.Enqueue((phi.GetSource(index), phi.GetBlock(index)));
++                    }
++                }
++                else if (operand.AsgOp is Operation source)
++                {
++                    for (int index = 0; index < source.SourcesCount; index++)
++                    {
++                        pending.Enqueue((source.GetSource(index), current.Block));
++                    }
++                }
++            }
++
++            if (candidates.Count == 0)
++            {
++                throw new NotSupportedException("No bounded cbuf-pair candidate found for global operation.");
++            }
++            if (gtsContext.TryGetFunctionId(operation, true, candidates, out int functionId, guarded: true))
++            {
++                return functionId;
++            }
++
++            int arguments = operation.Inst == Instruction.AtomicCompareAndSwap ? 4 :
++                operation.Inst == Instruction.Store || operation.Inst.IsAtomic() ? 3 : 2;
++            EmitterContext context = new();
++            Operand low = Argument(0);
++            Operand high = Argument(1);
++
++            foreach (uint packed in candidates)
++            {
++                (int slot, int offset) = UnpackCbSlotAndOffset(packed);
++                bool write = operation.Inst == Instruction.Store || operation.Inst.IsAtomic();
++                if (!resourceManager.TryGetStorageBufferBinding(slot, offset, write, out int binding, guarded: true))
++                {
++                    throw new NotSupportedException("Storage candidates exceed the descriptor resource limit.");
++                }
++
++                // Match the host exactly: without an explicit unaligned-storage
++                // contract it binds the pointer itself, not the accessor's default.
++                Operand baseLow = storageUnaligned
++                    ? context.BitwiseAnd(Cbuf(slot, offset), Const(-alignment))
++                    : Cbuf(slot, offset);
++                Operand deltaLow = context.ISubtract(low, baseLow);
++                Operand borrow = context.BitwiseAnd(context.ICompareLessUnsigned(low, baseLow), Const(1));
++                Operand deltaHigh = context.ISubtract(context.ISubtract(high, Cbuf(slot, offset + 1)), borrow);
++                Operand word = context.ShiftRightU32(deltaLow, Const(2));
++                Operand words = context.StorageBufferLength(binding);
++                Operand inRange = context.BitwiseAnd(context.ICompareEqual(deltaHigh, Const(0)),
++                    context.ICompareLessUnsigned(word, words));
++                inRange = context.BitwiseAnd(inRange, context.ICompareEqual(context.BitwiseAnd(deltaLow, Const(3)), Const(0)));
++
++                Operand skip = Label();
++                context.BranchIfFalse(skip, inRange);
++                Operand compare = arguments == 4 ? Argument(2) : null;
++                Operand value = arguments >= 3 ? Argument(arguments - 1) : null;
++                if (!TryGenerateStorageOp(resourceManager, targetLanguage, context, operation.Inst, operation.StorageKind,
++                    deltaLow, compare, value, new SearchResult(slot, offset), out Operand result, guarded: true))
++                {
++                    throw new NotSupportedException("Cannot emit guarded storage operation.");
++                }
++                if (result != null)
++                {
++                    context.Return(result);
++                }
++                else
++                {
++                    context.Return();
++                }
++                context.MarkLabel(skip);
++            }
++
++            bool returnsValue = operation.Dest != null;
++            if (returnsValue)
++            {
++                context.Return(Const(0));
++            }
++            else
++            {
++                context.Return();
++            }
++            Function function = new(ControlFlowGraph.Create(context.GetOperations()).Blocks,
++                "Guarded_" + GetFunctionName(operation, true, candidates), returnsValue, arguments, 0);
++            return gtsContext.AddFunction(operation, true, candidates, function, guarded: true);
+         }
+ 
+         private static bool CanUseInlineStorageOp(Operation operation, TargetLanguage targetLanguage)
+@@ -828,12 +987,12 @@
+             Operand compare,
+             Operand value,
+             SearchResult result,
+-            out Operand resultValue)
++            out Operand resultValue, bool guarded = false)
+         {
+             resultValue = null;
+             bool isStore = inst.IsAtomic() || inst == Instruction.Store;
+ 
+-            if (!resourceManager.TryGetStorageBufferBinding(result.SbCbSlot, result.SbCbOffset, isStore, out int binding))
++            if (!resourceManager.TryGetStorageBufferBinding(result.SbCbSlot, result.SbCbOffset, isStore, out int binding, guarded))
+             {
+                 return false;
+             }
+--- a/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
+@@ -161,9 +161,9 @@
+             return setAndBinding.Binding;
+         }
+ 
+-        public bool TryGetStorageBufferBinding(int sbCbSlot, int sbCbOffset, bool write, out int binding)
+-        {
+-            if (!TryGetSbSlot((byte)sbCbSlot, (ushort)sbCbOffset, out int slot))
++        public bool TryGetStorageBufferBinding(int sbCbSlot, int sbCbOffset, bool write, out int binding, bool guarded = false)
++        {
++            if (!TryGetSbSlot((byte)sbCbSlot, (ushort)sbCbOffset, out int slot, guarded))
+             {
+                 binding = 0;
+                 return false;
+@@ -188,9 +188,11 @@
+             return true;
+         }
+ 
+-        private bool TryGetSbSlot(byte sbCbSlot, ushort sbCbOffset, out int slot)
+-        {
+-            int key = PackSbCbInfo(sbCbSlot, sbCbOffset);
++        private bool TryGetSbSlot(byte sbCbSlot, ushort sbCbOffset, out int slot, bool guarded)
++        {
++            // A guarded descriptor must never alias an unguarded descriptor,
++            // even for the same cbuf pair: their invalid-binding contracts differ.
++            int key = PackSbCbInfo(sbCbSlot, sbCbOffset) | (guarded ? 1 << 24 : 0);
+ 
+             if (!_sbSlots.TryGetValue(key, out slot))
+             {
+@@ -492,6 +494,10 @@
+                 {
+                     (int sbCbSlot, int sbCbOffset) = UnpackSbCbInfo(key);
+                     BufferUsageFlags flags = (_sbSlotWritten & (1u << slot)) != 0 ? BufferUsageFlags.Write : BufferUsageFlags.None;
++                    if ((key & (1 << 24)) != 0)
++                    {
++                        flags |= BufferUsageFlags.Guarded;
++                    }
+                     descriptors[descriptorIndex++] = new BufferDescriptor(setAndBinding.SetIndex, setAndBinding.Binding, slot, sbCbSlot, sbCbOffset, flags);
+                 }
+             }

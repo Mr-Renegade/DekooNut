@@ -1,0 +1,71 @@
+--- a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
++++ b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+@@ -160,6 +160,12 @@
+         // Explicit ABI opt-in. Other clients and backends retain the legacy pass.
+         bool QueryStorageBufferRuntimeCandidates() => false;
+         bool QueryHostSupportsStorageBufferArrayLength() => false;
++
++        // Returns the count of bound NVN 2 compute buffer descriptors that can be tested as guarded candidates.
++        int QueryStorageBufferCandidateCount() => 0;
++
++        // Returns a 32-bit-word offset in compute constant bank 0 for a buffer's base-address descriptor pair.
++        int QueryStorageBufferCandidateOffset(int index) => throw new NotSupportedException();
+ 
+         /// <summary>
+         /// Queries whenever the current draw uses unaligned storage buffer addresses.
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -445,41 +445,18 @@
+                 }
+             }
+ 
+-            AddCandidate(FindUniqueBaseAddressCb(gtsContext, block, operation.GetSource(0), needsOffset: false));
+-            Queue<(Operand Value, BasicBlock Block)> pending = new();
+-            HashSet<Operand> seen = [];
+-            pending.Enqueue((operation.GetSource(0), block));
+-            while (pending.TryDequeue(out var current))
+-            {
+-                Operand operand = current.Value;
+-                if (!seen.Add(operand))
+-                {
+-                    continue;
+-                }
+-                if (seen.Count > 65536)
+-                {
+-                    throw new NotSupportedException("Storage-candidate expression exceeds the traversal limit.");
+-                }
+-
+-                AddCandidate(FindUniqueBaseAddressCb(gtsContext, current.Block, operand, needsOffset: false));
+-                if (operand.Type == OperandType.ConstantBuffer)
+-                {
+-                    AddCandidate(new SearchResult(operand.GetCbufSlot(), operand.GetCbufOffset()));
+-                }
+-                else if (operand.AsgOp is PhiNode phi)
+-                {
+-                    for (int index = 0; index < phi.SourcesCount; index++)
+-                    {
+-                        pending.Enqueue((phi.GetSource(index), phi.GetBlock(index)));
+-                    }
+-                }
+-                else if (operand.AsgOp is Operation source)
+-                {
+-                    for (int index = 0; index < source.SourcesCount; index++)
+-                    {
+-                        pending.Enqueue((source.GetSource(index), current.Block));
+-                    }
+-                }
++            // Compute global pointers can be loaded indirectly, leaving no cbuf operand in their expression graph.
++            // Test only the descriptors that NVN 2 actually bound for this dispatch; the emitted range guards
++            // discard every candidate that does not contain the requested address.
++            int storageCandidateCount = gpuAccessor.QueryStorageBufferCandidateCount();
++            if (storageCandidateCount < 0 || storageCandidateCount > 32)
++            {
++                throw new NotSupportedException("Buffer candidate count is outside the NVN 2 compute limit.");
++            }
++            for (int index = 0; index < storageCandidateCount; index++)
++            {
++                int offset = gpuAccessor.QueryStorageBufferCandidateOffset(index);
++                AddCandidate(new SearchResult(0, offset));
+             }
+ 
+             if (candidates.Count == 0)

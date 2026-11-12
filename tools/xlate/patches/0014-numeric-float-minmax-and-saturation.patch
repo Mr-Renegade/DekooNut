@@ -1,0 +1,109 @@
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+@@ -333,6 +333,17 @@
+
+         private static OperationResult GenerateClamp(CodeGenContext context, AstOperation operation)
+         {
++            if (operation.Inst.HasFlag(Instruction.FP32) || operation.Inst.HasFlag(Instruction.FP64))
++            {
++                bool isFP64 = operation.Inst.HasFlag(Instruction.FP64);
++                AggregateType type = isFP64 ? AggregateType.FP64 : AggregateType.FP32;
++                SpvInstruction x = context.Get(type, operation.GetSource(0));
++                SpvInstruction low = context.Get(type, operation.GetSource(1));
++                SpvInstruction high = context.Get(type, operation.GetSource(2));
++                SpvInstruction lower = EmitNumericMinMax(context, x, low, isFP64, maximum: true);
++                return new OperationResult(type, EmitNumericMinMax(context, lower, high, isFP64, maximum: false));
++            }
++
+             return GenerateTernary(context, operation, context.Delegates.GlslFClamp, context.Delegates.GlslSClamp);
+         }
+
+@@ -953,6 +964,11 @@
+
+         private static OperationResult GenerateMaximum(CodeGenContext context, AstOperation operation)
+         {
++            if (operation.Inst.HasFlag(Instruction.FP32) || operation.Inst.HasFlag(Instruction.FP64))
++            {
++                return GenerateNumericMinMax(context, operation, maximum: true);
++            }
++
+             return GenerateBinary(context, operation, context.Delegates.GlslFMax, context.Delegates.GlslSMax);
+         }
+
+@@ -969,7 +985,64 @@
+
+         private static OperationResult GenerateMinimum(CodeGenContext context, AstOperation operation)
+         {
++            if (operation.Inst.HasFlag(Instruction.FP32) || operation.Inst.HasFlag(Instruction.FP64))
++            {
++                return GenerateNumericMinMax(context, operation, maximum: false);
++            }
++
+             return GenerateBinary(context, operation, context.Delegates.GlslFMin, context.Delegates.GlslSMin);
++        }
++
++        private static OperationResult GenerateNumericMinMax(CodeGenContext context, AstOperation operation, bool maximum)
++        {
++            bool isFP64 = operation.Inst.HasFlag(Instruction.FP64);
++            AggregateType type = isFP64 ? AggregateType.FP64 : AggregateType.FP32;
++            SpvInstruction a = context.Get(type, operation.GetSource(0));
++            SpvInstruction b = context.Get(type, operation.GetSource(1));
++            // The result is a bitcast, not floating arithmetic: do not use GenerateBinary's NoContraction decoration.
++            return new OperationResult(type, EmitNumericMinMax(context, a, b, isFP64, maximum));
++        }
++
++        private static SpvInstruction EmitNumericMinMax(
++            CodeGenContext context, SpvInstruction a, SpvInstruction b, bool isFP64, bool maximum)
++        {
++            // GLSL min/max instructions have implicit NaN/Inf/zero-sign assumptions without FloatControls2.
++            // Compare IEEE encodings as integers instead: negative encodings reverse order, positive ones do not.
++            // The unsigned key then orders -Inf, negative numbers, -0, +0, positive numbers and +Inf.
++            if (isFP64)
++            {
++                context.AddCapability(Capability.Int64);
++            }
++
++            SpvInstruction uintType = context.TypeInt(isFP64 ? 64 : 32, false);
++            SpvInstruction boolType = context.TypeBool();
++            SpvInstruction sign = context.Constant(uintType, isFP64
++                ? (SpvLiteralInteger)0x8000000000000000UL : (SpvLiteralInteger)0x80000000U);
++            SpvInstruction infinity = context.Constant(uintType, isFP64
++                ? (SpvLiteralInteger)0x7ff0000000000000UL : (SpvLiteralInteger)0x7f800000U);
++            SpvInstruction zero = context.Constant(uintType, isFP64
++                ? (SpvLiteralInteger)0UL : (SpvLiteralInteger)0U);
++            SpvInstruction magnitudeMask = context.Not(uintType, sign);
++            SpvInstruction bitsA = context.Bitcast(uintType, a);
++            SpvInstruction bitsB = context.Bitcast(uintType, b);
++
++            SpvInstruction Key(SpvInstruction bits)
++            {
++                SpvInstruction negative = context.INotEqual(boolType, context.BitwiseAnd(uintType, bits, sign), zero);
++                return context.Select(uintType, negative, context.Not(uintType, bits), context.BitwiseXor(uintType, bits, sign));
++            }
++
++            SpvInstruction keyA = Key(bitsA);
++            SpvInstruction keyB = Key(bitsB);
++            SpvInstruction chooseA = maximum
++                ? context.UGreaterThan(boolType, keyA, keyB) : context.ULessThan(boolType, keyA, keyB);
++            SpvInstruction selected = context.Select(uintType, chooseA, bitsA, bitsB);
++            SpvInstruction nanA = context.UGreaterThan(boolType, context.BitwiseAnd(uintType, bitsA, magnitudeMask), infinity);
++            SpvInstruction nanB = context.UGreaterThan(boolType, context.BitwiseAnd(uintType, bitsB, magnitudeMask), infinity);
++            // One NaN selects the numeric operand; two NaNs select a NaN without promising its payload.
++            selected = context.Select(uintType, nanB, bitsA, selected);
++            selected = context.Select(uintType, nanA, bitsB, selected);
++            return context.Bitcast(isFP64 ? context.TypeFP64() : context.TypeFP32(), selected);
+         }
+
+         private static OperationResult GenerateMinimumU32(CodeGenContext context, AstOperation operation)
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/ConstantFolding.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/ConstantFolding.cs
+@@ -105,7 +105,8 @@
+                     break;
+
+                 case Instruction.FP32 | Instruction.Clamp:
+-                    EvaluateFPTernary(operation, (x, y, z) => Math.Clamp(x, y, z));
++                    // Match numeric min/max, including a NaN value with SAT bounds 0 and 1.
++                    EvaluateFPTernary(operation, (x, y, z) => float.MinNumber(float.MaxNumber(x, y), z));
+                     break;
+
+                 case Instruction.FP32 | Instruction.CompareEqual:

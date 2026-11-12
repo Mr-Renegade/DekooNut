@@ -1,0 +1,359 @@
+// Adapted from LAS Recomp runtime/cpu.h @ da35b83 (MIT, Copyright (c) 2026 Peiikai).
+// Guest CPU state and helpers used by recompiled code.
+#pragma once
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+typedef struct __attribute__((aligned(16))) Cpu {
+    uint64_t x[32];          // x0-x30 (x[31] unused; sp is separate)
+    uint64_t sp;             // 256
+    uint64_t pc;             // 264: target for indirect dispatch
+    uint64_t nzcv;           // 272: flags in bits 31..28
+    uint64_t tpidr;          // 280
+    uint64_t tpidrro;        // 288
+    uint64_t excl_addr;      // 296
+    uint64_t excl_val;       // 304
+    void *thread;            // 312: runtime thread object
+    uint64_t fpcr;           // 320: guest FPCR/FPSR (portable FP/SIMD lowering only; the asm path uses the host's)
+    uint64_t fpsr;           // 328
+    uint64_t excl_val_hi;    // 336: upper half of a 128-bit exclusive pair (LDXP/LDAXP of two X registers)
+    uint8_t _pad[512 - 344];
+    __uint128_t v[32];       // 512
+} Cpu;
+
+_Static_assert(offsetof(Cpu, sp) == 256, "sp");
+_Static_assert(offsetof(Cpu, pc) == 264, "pc");
+_Static_assert(offsetof(Cpu, nzcv) == 272, "nzcv");
+_Static_assert(offsetof(Cpu, fpcr) == 320, "fpcr");
+_Static_assert(offsetof(Cpu, fpsr) == 328, "fpsr");
+_Static_assert(offsetof(Cpu, v) == 512, "v");
+
+typedef void (*GuestFn)(Cpu *);
+
+// ---- runtime services (runtime/*.c)
+void rt_dispatch(Cpu *c);                 // call function at c->pc
+void rt_spin_gate(Cpu *c, uint64_t head);  // a pass of a spin wait loop (kernel.c, recomp/patches.py `spin`)
+void rt_svc(Cpu *c, uint32_t imm, uint64_t pc);
+void rt_brk(Cpu *c, uint32_t imm, uint64_t pc) __attribute__((noreturn));
+void rt_udf(Cpu *c, uint64_t pc) __attribute__((noreturn));
+uint64_t rt_ticks(void);
+uint32_t rt_tick_hz(void);   // the guest counter rate: 19.2 MHz (Switch), 31.25 MHz (Switch 2)
+uint64_t rt_ticks_to_ns(uint64_t ticks);
+uint64_t rt_ns_to_ticks(uint64_t ns);
+
+#if defined(__aarch64__)
+static inline uint64_t rt_get_fpcr(void) { uint64_t v; __asm__ volatile("mrs %0, fpcr" : "=r"(v)); return v; }
+static inline uint64_t rt_get_fpsr(void) { uint64_t v; __asm__ volatile("mrs %0, fpsr" : "=r"(v)); return v; }
+static inline void rt_set_fpcr(uint64_t v) { __asm__ volatile("msr fpcr, %0" :: "r"(v)); }
+static inline void rt_set_fpsr(uint64_t v) { __asm__ volatile("msr fpsr, %0" :: "r"(v)); }
+static inline void rt_fpcr_sync(const Cpu *c) { (void)c; }
+#else
+// Host FP state is not the guest's here: code lifted with --simd=c keeps FPCR/FPSR in Cpu (c->fpcr, zeroed
+// with the Cpu), so the host-side reset in thread start-up has nothing to do.
+static inline uint64_t rt_get_fpcr(void) { return 0; }
+static inline uint64_t rt_get_fpsr(void) { return 0; }
+static inline void rt_set_fpcr(uint64_t v) { (void)v; }
+static inline void rt_set_fpsr(uint64_t v) { (void)v; }
+// A host thread running guest code keeps MXCSR in step with c->fpcr: FTZ|DAZ = FPCR.FZ, RC = nearest (FPCR.RMode takes
+// the slow paths of runtime/simd.h). The FP helpers rely on it without checking, so it is set wherever FPCR or the host
+// FP context changes (MSR FPCR, rt_call, fiber resume).
+static inline void rt_fpcr_sync(const Cpu *c) {
+    unsigned cur = __builtin_ia32_stmxcsr();
+    unsigned want = (cur & ~0xE040u) | (c->fpcr & (1u << 24) ? 0x8040u : 0);   // FTZ 0x8000, DAZ 0x40, RC 0x6000
+    if (cur != want) __builtin_ia32_ldmxcsr(want);
+}
+#endif
+
+// ---- memory: guest addresses are host addresses
+typedef uint16_t __attribute__((aligned(1), may_alias)) u16u;
+typedef uint32_t __attribute__((aligned(1), may_alias)) u32u;
+typedef uint64_t __attribute__((aligned(1), may_alias)) u64u;
+typedef uint8_t __attribute__((may_alias)) u8a;
+
+// The generated code calls this at the entry of every lifted function; it does nothing.
+#define FN_ENTER(a) do { } while (0)
+
+#define LD8(a)  (*(const u8a *)(uintptr_t)(a))
+#define LD16(a) (*(const u16u *)(uintptr_t)(a))
+#define LD32(a) (*(const u32u *)(uintptr_t)(a))
+#define LD64(a) (*(const u64u *)(uintptr_t)(a))
+#define ST8(a, v)  (*(u8a *)(uintptr_t)(a) = (uint8_t)(v))
+#define ST16(a, v) (*(u16u *)(uintptr_t)(a) = (uint16_t)(v))
+#define ST32(a, v) (*(u32u *)(uintptr_t)(a) = (uint32_t)(v))
+#define ST64(a, v) (*(u64u *)(uintptr_t)(a) = (uint64_t)(v))
+
+// ---- exclusive monitor (emulated with compare-and-swap)
+#define EXCL(N, T)                                                                         \
+    static inline uint64_t ldx##N(Cpu *c, uint64_t a) {                                    \
+        T v = __atomic_load_n((T *)(uintptr_t)a, __ATOMIC_ACQUIRE);                        \
+        c->excl_addr = a;                                                                  \
+        c->excl_val = v;                                                                   \
+        return v;                                                                          \
+    }                                                                                      \
+    static inline uint32_t stx##N(Cpu *c, uint64_t a, uint64_t v) {                        \
+        if (c->excl_addr != a) return 1;                                                   \
+        c->excl_addr = ~0ull;                                                              \
+        T expected = (T)c->excl_val;                                                       \
+        return !__atomic_compare_exchange_n((T *)(uintptr_t)a, &expected, (T)v, 0,         \
+                                            __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);           \
+    }                                                                                      \
+    static inline uint64_t lda##N(uint64_t a) {                                            \
+        return __atomic_load_n((T *)(uintptr_t)a, __ATOMIC_ACQUIRE);                       \
+    }                                                                                      \
+    static inline void stl##N(uint64_t a, uint64_t v) {                                    \
+        __atomic_store_n((T *)(uintptr_t)a, (T)v, __ATOMIC_RELEASE);                       \
+    }
+EXCL(8, uint8_t)
+EXCL(16, uint16_t)
+EXCL(32, uint32_t)
+EXCL(64, uint64_t)
+
+// Exclusive pair of two X registers: one 16-byte-aligned 128-bit access (cmpxchg16b; x86-64-v3 has CX16).
+// A pair of two W registers is a 64-bit exclusive and uses ldx64/stx64.
+static inline __uint128_t ldxp128(Cpu *c, uint64_t a) {
+    __uint128_t v = __atomic_load_n((__uint128_t *)(uintptr_t)a, __ATOMIC_ACQUIRE);
+    c->excl_addr = a;
+    c->excl_val = (uint64_t)v;
+    c->excl_val_hi = (uint64_t)(v >> 64);
+    return v;
+}
+static inline uint32_t stxp128(Cpu *c, uint64_t a, uint64_t lo, uint64_t hi) {
+    if (c->excl_addr != a) return 1;
+    c->excl_addr = ~0ull;
+    __uint128_t expected = ((__uint128_t)c->excl_val_hi << 64) | c->excl_val;
+    __uint128_t v = ((__uint128_t)hi << 64) | lo;
+    return !__atomic_compare_exchange_n((__uint128_t *)(uintptr_t)a, &expected, v, 0, __ATOMIC_SEQ_CST,
+                                        __ATOMIC_SEQ_CST);
+}
+
+// ---- LSE atomics (ARMv8.1; the A57 lacks them, the SDK carries them behind a CPU feature check).
+// Add, clear, xor, set and swap map to __atomic builtins in the lifter; min/max need a CAS loop. Return the old value.
+#define ATOMIC_MINMAX(N, T, S)                                                             \
+    static inline T atomic_smax##N(uint64_t a, T v) {                                      \
+        T o = __atomic_load_n((T *)(uintptr_t)a, __ATOMIC_RELAXED);                        \
+        while (!__atomic_compare_exchange_n((T *)(uintptr_t)a, &o, (S)o > (S)v ? o : v, 1, \
+                                            __ATOMIC_SEQ_CST, __ATOMIC_RELAXED)) {}        \
+        return o;                                                                          \
+    }                                                                                      \
+    static inline T atomic_smin##N(uint64_t a, T v) {                                      \
+        T o = __atomic_load_n((T *)(uintptr_t)a, __ATOMIC_RELAXED);                        \
+        while (!__atomic_compare_exchange_n((T *)(uintptr_t)a, &o, (S)o < (S)v ? o : v, 1, \
+                                            __ATOMIC_SEQ_CST, __ATOMIC_RELAXED)) {}        \
+        return o;                                                                          \
+    }                                                                                      \
+    static inline T atomic_umax##N(uint64_t a, T v) {                                      \
+        T o = __atomic_load_n((T *)(uintptr_t)a, __ATOMIC_RELAXED);                        \
+        while (!__atomic_compare_exchange_n((T *)(uintptr_t)a, &o, o > v ? o : v, 1,       \
+                                            __ATOMIC_SEQ_CST, __ATOMIC_RELAXED)) {}        \
+        return o;                                                                          \
+    }                                                                                      \
+    static inline T atomic_umin##N(uint64_t a, T v) {                                      \
+        T o = __atomic_load_n((T *)(uintptr_t)a, __ATOMIC_RELAXED);                        \
+        while (!__atomic_compare_exchange_n((T *)(uintptr_t)a, &o, o < v ? o : v, 1,       \
+                                            __ATOMIC_SEQ_CST, __ATOMIC_RELAXED)) {}        \
+        return o;                                                                          \
+    }
+ATOMIC_MINMAX(8, uint8_t, int8_t)
+ATOMIC_MINMAX(16, uint16_t, int16_t)
+ATOMIC_MINMAX(32, uint32_t, int32_t)
+ATOMIC_MINMAX(64, uint64_t, int64_t)
+
+// ---- flags (packed NZCV in bits 31..28)
+#define FLAG_N(c) (((c)->nzcv >> 31) & 1)
+#define FLAG_Z(c) (((c)->nzcv >> 30) & 1)
+#define FLAG_C(c) (((c)->nzcv >> 29) & 1)
+#define FLAG_V(c) (((c)->nzcv >> 28) & 1)
+#define COND_EQ(c) (FLAG_Z(c))
+#define COND_NE(c) (!FLAG_Z(c))
+#define COND_CS(c) (FLAG_C(c))
+#define COND_CC(c) (!FLAG_C(c))
+#define COND_MI(c) (FLAG_N(c))
+#define COND_PL(c) (!FLAG_N(c))
+#define COND_VS(c) (FLAG_V(c))
+#define COND_VC(c) (!FLAG_V(c))
+#define COND_HI(c) (FLAG_C(c) && !FLAG_Z(c))
+#define COND_LS(c) (!(FLAG_C(c) && !FLAG_Z(c)))
+#define COND_GE(c) (FLAG_N(c) == FLAG_V(c))
+#define COND_LT(c) (FLAG_N(c) != FLAG_V(c))
+#define COND_GT(c) (!FLAG_Z(c) && FLAG_N(c) == FLAG_V(c))
+#define COND_LE(c) (!(!FLAG_Z(c) && FLAG_N(c) == FLAG_V(c)))
+
+#define MKFLAGS(n, z, cy, v) \
+    (((uint64_t)(n) << 31) | ((uint64_t)(z) << 30) | ((uint64_t)(cy) << 29) | ((uint64_t)(v) << 28))
+
+static inline uint64_t adds64(Cpu *c, uint64_t a, uint64_t b) {
+    uint64_t r = a + b;
+    c->nzcv = MKFLAGS(r >> 63, r == 0, r < a, ((a ^ r) & (b ^ r)) >> 63);
+    return r;
+}
+static inline uint64_t subs64(Cpu *c, uint64_t a, uint64_t b) {
+    uint64_t r = a - b;
+    c->nzcv = MKFLAGS(r >> 63, r == 0, a >= b, ((a ^ b) & (a ^ r)) >> 63);
+    return r;
+}
+static inline uint32_t adds32(Cpu *c, uint32_t a, uint32_t b) {
+    uint32_t r = a + b;
+    c->nzcv = MKFLAGS(r >> 31, r == 0, r < a, ((a ^ r) & (b ^ r)) >> 31);
+    return r;
+}
+static inline uint32_t subs32(Cpu *c, uint32_t a, uint32_t b) {
+    uint32_t r = a - b;
+    c->nzcv = MKFLAGS(r >> 31, r == 0, a >= b, ((a ^ b) & (a ^ r)) >> 31);
+    return r;
+}
+static inline uint64_t logic64(Cpu *c, uint64_t r) { c->nzcv = MKFLAGS(r >> 63, r == 0, 0, 0); return r; }
+static inline uint32_t logic32(Cpu *c, uint32_t r) { c->nzcv = MKFLAGS(r >> 31, r == 0, 0, 0); return r; }
+
+#define ADC_IMPL(N, S)                                                                     \
+    static inline uint##N##_t adc##N(Cpu *c, uint##N##_t a, uint##N##_t b) {               \
+        return a + b + (uint##N##_t)FLAG_C(c);                                             \
+    }                                                                                      \
+    static inline uint##N##_t sbc##N(Cpu *c, uint##N##_t a, uint##N##_t b) {               \
+        return a - b - 1 + (uint##N##_t)FLAG_C(c);                                         \
+    }                                                                                      \
+    static inline uint##N##_t adcs##N(Cpu *c, uint##N##_t a, uint##N##_t b) {              \
+        uint##N##_t cin = FLAG_C(c), r = a + b + cin;                                      \
+        int carry = cin ? r <= a : r < a;                                                  \
+        c->nzcv = MKFLAGS(r >> (N - 1), r == 0, carry, ((a ^ r) & (b ^ r)) >> (N - 1));    \
+        return r;                                                                          \
+    }                                                                                      \
+    static inline uint##N##_t sbcs##N(Cpu *c, uint##N##_t a, uint##N##_t b) {              \
+        return adcs##N(c, a, (uint##N##_t)~b);                                             \
+    }
+ADC_IMPL(64, )
+ADC_IMPL(32, )
+
+// ---- function-local flags (recomp/flags.py)
+// Generated functions keep NZCV in a local Flags F. A definition of a known kind stores its operands, and fc_<kind>(&F,
+// CC_xx) computes a condition from them, so a compare and its branch become one host compare; F.nz holds the packed
+// form where only that is known. Every helper is always inlined with a constant condition.
+typedef struct { uint64_t a, b, nz; } Flags;
+enum { CC_EQ, CC_NE, CC_CS, CC_CC, CC_MI, CC_PL, CC_VS, CC_VC, CC_HI, CC_LS, CC_GE, CC_LT, CC_GT, CC_LE };
+#define CPU_FL static inline __attribute__((always_inline))
+
+CPU_FL int fl_cond(int cc, int n, int z, int cy, int v) {
+    switch (cc) {
+    case CC_EQ: return z;
+    case CC_NE: return !z;
+    case CC_CS: return cy;
+    case CC_CC: return !cy;
+    case CC_MI: return n;
+    case CC_PL: return !n;
+    case CC_VS: return v;
+    case CC_VC: return !v;
+    case CC_HI: return cy && !z;
+    case CC_LS: return !cy || z;
+    case CC_GE: return n == v;
+    case CC_LT: return n != v;
+    case CC_GT: return !z && n == v;
+    default: return z || n != v;
+    }
+}
+
+// Subtract (SUBS, CMP): conditions as host compares of the operands.
+#define FL_SUB(N, U, S)                                                                    \
+    CPU_FL U fsub##N(Flags *f, U a, U b) { f->a = a; f->b = b; return (U)(a - b); }            \
+    CPU_FL int fc_sub##N(const Flags *f, int cc) {                                             \
+        U a = (U)f->a, b = (U)f->b, r = (U)(a - b);                                        \
+        switch (cc) {                                                                      \
+        case CC_EQ: return a == b;                                                         \
+        case CC_NE: return a != b;                                                         \
+        case CC_CS: return a >= b;                                                         \
+        case CC_CC: return a < b;                                                          \
+        case CC_MI: return (S)r < 0;                                                       \
+        case CC_PL: return (S)r >= 0;                                                      \
+        case CC_VS: return (S)((a ^ b) & (a ^ r)) < 0;                                     \
+        case CC_VC: return (S)((a ^ b) & (a ^ r)) >= 0;                                    \
+        case CC_HI: return a > b;                                                          \
+        case CC_LS: return a <= b;                                                         \
+        case CC_GE: return (S)a >= (S)b;                                                   \
+        case CC_LT: return (S)a < (S)b;                                                    \
+        case CC_GT: return (S)a > (S)b;                                                    \
+        default: return (S)a <= (S)b;                                                      \
+        }                                                                                  \
+    }                                                                                      \
+    CPU_FL uint64_t nz_sub##N(U a, U b) {                                                      \
+        U r = (U)(a - b);                                                                  \
+        return MKFLAGS((S)r < 0, r == 0, a >= b, (S)((a ^ b) & (a ^ r)) < 0);              \
+    }                                                                                      \
+    CPU_FL uint64_t fnz_sub##N(const Flags *f) { return nz_sub##N((U)f->a, (U)f->b); }
+FL_SUB(64, uint64_t, int64_t)
+FL_SUB(32, uint32_t, int32_t)
+
+// Add (ADDS, CMN) and logic results (ANDS, TST, BICS): conditions from N, Z, C, V.
+#define FL_ADD(N, U, S)                                                                    \
+    CPU_FL U fadd##N(Flags *f, U a, U b) { f->a = a; f->b = b; return (U)(a + b); }            \
+    CPU_FL uint64_t nz_add##N(U a, U b) {                                                      \
+        U r = (U)(a + b);                                                                  \
+        return MKFLAGS((S)r < 0, r == 0, r < a, (S)((a ^ r) & (b ^ r)) < 0);               \
+    }                                                                                      \
+    CPU_FL int fc_add##N(const Flags *f, int cc) {                                             \
+        U a = (U)f->a, b = (U)f->b, r = (U)(a + b);                                        \
+        return fl_cond(cc, (S)r < 0, r == 0, r < a, (S)((a ^ r) & (b ^ r)) < 0);           \
+    }                                                                                      \
+    CPU_FL uint64_t fnz_add##N(const Flags *f) { return nz_add##N((U)f->a, (U)f->b); }         \
+    CPU_FL U flogic##N(Flags *f, U r) { f->a = r; return r; }                                  \
+    CPU_FL int fc_logic##N(const Flags *f, int cc) {                                           \
+        U r = (U)f->a;                                                                     \
+        return fl_cond(cc, (S)r < 0, r == 0, 0, 0);                                        \
+    }                                                                                      \
+    CPU_FL uint64_t fnz_logic##N(const Flags *f) { return MKFLAGS((S)f->a < 0, (U)f->a == 0, 0, 0); }
+FL_ADD(64, uint64_t, int64_t)
+FL_ADD(32, uint32_t, int32_t)
+
+// Packed flags.
+CPU_FL int fc_nz(const Flags *f, int cc) {
+    return fl_cond(cc, f->nz >> 31 & 1, f->nz >> 30 & 1, f->nz >> 29 & 1, f->nz >> 28 & 1);
+}
+CPU_FL uint64_t fnz_nz(const Flags *f) { return f->nz; }
+
+// ADC, SBC, ADCS, SBCS with the carry in from F.
+#define FL_ADC(N, U)                                                                       \
+    CPU_FL U adc##N##f(int cin, U a, U b) { return (U)(a + b + (U)cin); }                      \
+    CPU_FL U sbc##N##f(int cin, U a, U b) { return (U)(a - b - 1 + (U)cin); }                  \
+    CPU_FL U adcs##N##f(Flags *f, int cin, U a, U b) {                                         \
+        U r = (U)(a + b + (U)cin);                                                         \
+        int carry = cin ? r <= a : r < a;                                                  \
+        f->nz = MKFLAGS(r >> (N - 1), r == 0, carry, ((a ^ r) & (b ^ r)) >> (N - 1));      \
+        return r;                                                                          \
+    }                                                                                      \
+    CPU_FL U sbcs##N##f(Flags *f, int cin, U a, U b) { return adcs##N##f(f, cin, a, (U)~b); }
+FL_ADC(64, uint64_t)
+FL_ADC(32, uint32_t)
+#undef CPU_FL
+
+// ---- bit ops
+#define ROR64(v, r) ((uint64_t)(v) >> ((r) & 63) | (uint64_t)(v) << ((64 - ((r) & 63)) & 63))
+#define ROR32(v, r) ((uint32_t)(v) >> ((r) & 31) | (uint32_t)(v) << ((32 - ((r) & 31)) & 31))
+static inline uint64_t clz64(uint64_t v) { return v ? __builtin_clzll(v) : 64; }
+static inline uint32_t clz32(uint32_t v) { return v ? __builtin_clz(v) : 32; }
+static inline uint64_t cls64(uint64_t v) { return clz64(v ^ (uint64_t)((int64_t)v >> 1)) - 1; }
+static inline uint32_t cls32(uint32_t v) { return clz32(v ^ (uint32_t)((int32_t)v >> 1)) - 1; }
+static inline uint64_t rbit64(uint64_t v) { return __builtin_bitreverse64(v); }
+static inline uint32_t rbit32(uint32_t v) { return __builtin_bitreverse32(v); }
+static inline uint32_t rev16_32(uint32_t v) { return ((v & 0x00ff00ffu) << 8) | ((v >> 8) & 0x00ff00ffu); }
+static inline uint64_t rev16_64(uint64_t v) {
+    return ((v & 0x00ff00ff00ff00ffull) << 8) | ((v >> 8) & 0x00ff00ff00ff00ffull);
+}
+static inline uint64_t rev32_64(uint64_t v) {
+    return ((uint64_t)__builtin_bswap32((uint32_t)v)) | ((uint64_t)__builtin_bswap32((uint32_t)(v >> 32)) << 32);
+}
+static inline uint64_t udiv64(uint64_t a, uint64_t b) { return b ? a / b : 0; }
+static inline uint32_t udiv32(uint32_t a, uint32_t b) { return b ? a / b : 0; }
+static inline uint64_t sdiv64(uint64_t a, uint64_t b) {
+    if (!b) return 0;
+    if ((int64_t)a == INT64_MIN && (int64_t)b == -1) return a;
+    return (uint64_t)((int64_t)a / (int64_t)b);
+}
+static inline uint32_t sdiv32(uint32_t a, uint32_t b) {
+    if (!b) return 0;
+    if ((int32_t)a == INT32_MIN && (int32_t)b == -1) return a;
+    return (uint32_t)((int32_t)a / (int32_t)b);
+}
+
+// Portable FP/SIMD helpers for code lifted with --simd=c (default off AArch64; gen.py includes simd.h itself
+// in that mode, so AArch64 hosts can build it too).
+#if !defined(__cplusplus) && !defined(__aarch64__)
+#include "simd.h"
+#endif

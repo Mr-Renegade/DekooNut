@@ -1,0 +1,76 @@
+# Reference checkouts of upstream projects (cloned locally, never committed)
+/refs/
+
+# Downloaded toolchain binaries and Python environments
+/toolchain/
+/.venv/
+/.venv-py314/
+__pycache__/
+
+# Personal paths to game files and keys
+/config.local.toml
+
+# Game inputs and everything derived from them. Never commit these.
+# tools/check_content.py enforces the same rule in CI and the pre-commit hook.
+/game/
+/build/
+/generated/
+*.xci
+*.xcz
+*.nsp
+*.nsz
+*.nca
+*.ncz
+*.tik
+*.keys
+*.nso
+*.npdm
+*.zs
+*.pack
+*.sarc
+*.bfres
+*.bntx
+*.bnsh
+*.webm
+
+# Build outputs
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.obj
+*.o
+*.lib
+*.a
+*.so
+*.so.*
+*.AppImage
+
+# .NET build output of the shader translator (tools/build_xlate.py)
+/tools/xlate/bin/
+/tools/xlate/obj/
+
+# Coding-agent setup and working notes (skills, hooks, playbook, backlog, research notes, milestone plans): local to
+# the maintainer's machine. tools/worktree.py links .claude and notes into task worktrees.
+/.claude/
+/.agents/
+/CLAUDE.local.md
+/skills-lock.json
+/notes/
+/docs/milestones/
+
+# Editor settings
+.vs/
+.vscode/
+.idea/
+
+# Patch leftovers, logs and OS files
+*.orig
+*.rej
+*.log
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Agent task worktrees (tools/worktree.py)
+/.worktrees/

@@ -1,0 +1,6 @@
+# Python 3.12 venv at .venv for recomp/ and the tests: uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r tools/requirements.txt
+# The shader and extraction tools (tools/prepare_oot.py, tools/extract_nup.py) run on Python 3.14 with the standard library only.
+capstone==5.0.9
+lz4==4.4.5
+numpy==2.5.4
+unicorn==2.1.4

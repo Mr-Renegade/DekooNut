@@ -1,0 +1,46 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -484,7 +484,42 @@
+ 
+             if (candidates.Count == 0)
+             {
+-                throw new NotSupportedException("No bounded cbuf-pair candidate found for global operation.");
++                // Keep enough of the pointer expression to distinguish an unsupported dynamic base from a missed
++                // constant-buffer root. The queue is capped because real shaders may build long address chains.
++                List<string> addressTrace = [];
++                Queue<Operand> tracePending = new();
++                HashSet<Operand> traceVisited = [];
++                tracePending.Enqueue(operation.GetSource(0));
++                while (tracePending.TryDequeue(out Operand operand) && addressTrace.Count < 40)
++                {
++                    if (!traceVisited.Add(operand))
++                    {
++                        continue;
++                    }
++
++                    string item = $"{operand.Type}:{operand.Value:x8}";
++                    if (operand.AsgOp is Operation definition)
++                    {
++                        item += $"={definition.Inst}@{definition.Index}";
++                        for (int index = 0; index < definition.SourcesCount; index++)
++                        {
++                            tracePending.Enqueue(definition.GetSource(index));
++                        }
++                    }
++                    else if (operand.AsgOp is PhiNode phi)
++                    {
++                        item += "=phi";
++                        for (int index = 0; index < phi.SourcesCount; index++)
++                        {
++                            tracePending.Enqueue(phi.GetSource(index));
++                        }
++                    }
++                    addressTrace.Add(item);
++                }
++
++                throw new NotSupportedException($"No bounded cbuf-pair candidate for global operation " +
++                    $"{operation.Inst}@{operation.Index} ({operation.StorageKind}); address: " +
++                    string.Join(" <- ", addressTrace));
+             }
+             if (gtsContext.TryGetFunctionId(operation, true, candidates, out int functionId, guarded: true))
+             {

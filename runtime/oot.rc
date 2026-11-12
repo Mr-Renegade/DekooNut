@@ -1,0 +1,3 @@
+/* The application manifest and icon of oot.exe; also a member of libootrt.a (linked with --whole-archive). */
+1 24 "oot.manifest"
+1 ICON "oot.ico"

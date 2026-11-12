@@ -1,0 +1,47 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
+@@ -239,7 +239,7 @@
+ 
+             if (!isImage)
+             {
+-                format = TextureFormat.Unknown;
++                format = _gpuAccessor.QueryTextureFormat(handle, cbufSlot);
+             }
+ 
+             SetBindingPair setAndBinding = GetTextureOrImageBinding(
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Declarations.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Declarations.cs
+@@ -176,7 +176,7 @@
+                     };
+ 
+                     imageType = context.TypeImage(
+-                        context.TypeFP32(),
++                        context.GetType(sampler.Format.GetComponentType()),
+                         dim,
+                         sampler.Type.HasFlag(SamplerType.Shadow),
+                         sampler.Type.HasFlag(SamplerType.Array),
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+@@ -1416,7 +1416,9 @@
+ 
+             bool colorIsVector = isGather || !isShadow;
+ 
+-            SpvInstruction resultType = colorIsVector ? context.TypeVector(context.TypeFP32(), 4) : context.TypeFP32();
++            // Integer sampled views return raw register bits, not a numeric float conversion.
++            AggregateType sampledType = context.Properties.Textures[texOp.GetTextureSetAndBinding()].Format.GetComponentType();
++            SpvInstruction resultType = colorIsVector ? context.TypeVector(context.GetType(sampledType), 4) : context.TypeFP32();
+ 
+             if (intCoords)
+             {
+@@ -1460,6 +1462,11 @@
+             else
+             {
+                 result = context.ImageSampleImplicitLod(resultType, image, pCoords, operandsMask, operands);
++            }
++
++            if (sampledType != AggregateType.FP32)
++            {
++                result = context.Bitcast(context.TypeVector(context.TypeFP32(), 4), result);
+             }
+ 
+             AggregateType swizzledResultType = AggregateType.FP32;

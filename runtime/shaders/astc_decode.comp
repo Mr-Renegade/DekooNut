@@ -1,0 +1,423 @@
+// ASTC LDR 2D decode to RGBA8 on the GPU, one invocation per texel. Ported from runtime/tex_astc.c (itself from LAS
+// Recomp runtime/nvn/astc.c @ da35b83a, MIT, Copyright (c) 2026 Peiikai), so the output is the same bytes as
+// astc_decode_ldr: endpoints expand to 16 bits (linear v * 257, sRGB v << 8 | 0x80), texel = (e0 * (64 - w) + e1 * w + 32) >> 6,
+// top 8 bits. Error blocks and HDR endpoint modes give magenta. A workgroup of 64 lanes takes up to four blocks of one block
+// row (main below); a block's lanes share the integer-sequence decode of its weights and colour values through shared memory.
+// Compiled to runtime/astc_decode_spv.h by tools/build_shaders.py; vk_astc.c records the dispatch.
+#version 450
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Blocks { uvec4 blk[]; };
+layout(std430, set = 0, binding = 1) writeonly buffer Texels { uint px[]; };
+// uint 0..11: byte offsets of the weight unquantization rows (QUANT_2..QUANT_32), 12..27: of the colour rows
+// (QUANT_6..QUANT_256 minus one); the bytes follow (vk_astc.c astc_tables).
+layout(std430, set = 0, binding = 2) readonly buffer Tables { uint tab[]; };
+
+layout(push_constant) uniform Params {
+    uint in_base;    // first block of slice 0 (uvec4 index into blk)
+    uint out_base;   // first texel of slice 0 (index into px)
+    uint width, height;
+    uint bw, bh;     // block footprint
+    uint bx;         // blocks per row
+    uint bslice;     // blocks per slice
+    uint srgb;
+} pc;
+
+uint tab_byte(uint i) { return (tab[i >> 2] >> ((i & 3u) * 8u)) & 0xFFu; }
+
+// n (<= 32) bits at pos; bits past 127 read as zero.
+uint rbits(uvec4 b, int pos, int n) {
+    if (n == 0 || pos >= 128) return 0u;
+    int wi = pos >> 5, sh = pos & 31;
+    uint v = b[wi] >> uint(sh);
+    if (sh != 0 && wi < 3) v |= b[wi + 1] << uint(32 - sh);
+    return n >= 32 ? v : v & ((1u << uint(n)) - 1u);
+}
+
+// Quantization levels QUANT_2 .. QUANT_256 (0..20): bits, trits, quints of tex_astc.c q_bits / q_trits / q_quints.
+int q_bits(int q) {
+    if (q < 2) return q == 0 ? 1 : 0;
+    int g = (q - 2) / 3, r = (q - 2) - 3 * g;
+    return r == 0 ? g + 2 : r == 1 ? g : g + 1;
+}
+bool q_trit(int q) { return q == 1 || (q >= 2 && (q - 2) % 3 == 2); }
+bool q_quint(int q) { return q >= 2 && (q - 2) % 3 == 1; }
+
+int ise_bitcount(int count, int q) {
+    int n = count * q_bits(q);
+    if (q_trit(q)) n += (8 * count + 4) / 5;
+    if (q_quint(q)) n += (7 * count + 2) / 3;
+    return n;
+}
+
+int trit_at(uint T, int k) {
+    uint C;
+    int t0, t1, t2, t3, t4;
+    if (((T >> 2) & 7u) == 7u) {
+        C = ((T >> 5) & 7u) << 2 | (T & 3u);
+        t4 = 2; t3 = 2;
+    } else {
+        C = T & 0x1Fu;
+        if (((T >> 5) & 3u) == 3u) { t4 = 2; t3 = int((T >> 7) & 1u); }
+        else { t4 = int((T >> 7) & 1u); t3 = int((T >> 5) & 3u); }
+    }
+    if ((C & 3u) == 3u) {
+        t2 = 2; t1 = int((C >> 4) & 1u);
+        t0 = int(((C >> 3) & 1u) << 1 | (((C >> 2) & 1u) & ~(C >> 3) & 1u));
+    } else if (((C >> 2) & 3u) == 3u) {
+        t2 = 2; t1 = 2; t0 = int(C & 3u);
+    } else {
+        t2 = int((C >> 4) & 1u); t1 = int((C >> 2) & 3u);
+        t0 = int(((C >> 1) & 1u) << 1 | ((C & 1u) & ~(C >> 1) & 1u));
+    }
+    return k == 0 ? t0 : k == 1 ? t1 : k == 2 ? t2 : k == 3 ? t3 : t4;
+}
+
+int quint_at(uint Q, int k) {
+    int q0, q1, q2;
+    if (((Q >> 1) & 3u) == 3u && ((Q >> 5) & 3u) == 0u) {
+        uint b0 = Q & 1u;
+        q2 = int(b0 << 2 | (((Q >> 4) & 1u) & ~b0 & 1u) << 1 | (((Q >> 3) & 1u) & ~b0 & 1u));
+        q1 = 4; q0 = 4;
+    } else {
+        uint C;
+        if (((Q >> 1) & 3u) == 3u) { q2 = 4; C = ((Q >> 3) & 3u) << 3 | (~(Q >> 5) & 3u) << 1 | (Q & 1u); }
+        else { q2 = int((Q >> 5) & 3u); C = Q & 0x1Fu; }
+        if ((C & 7u) == 5u) { q1 = 4; q0 = int((C >> 3) & 3u); }
+        else { q1 = int((C >> 3) & 3u); q0 = int(C & 7u); }
+    }
+    return k == 0 ? q0 : k == 1 ? q1 : q2;
+}
+
+// Raw ISE value idx (trit/quint << bits | bits) of a sequence of count values at bit start, reading one value's group only.
+uint ise_at(uvec4 b, int start, int count, int q, int idx) {
+    int nb = q_bits(q);
+    if (q_trit(q)) {
+        // value k of a group: nb bits at k * nb + ts[k], then tb[k] trit bits; ts = {0, 2, 4, 5, 7}, tb = {2, 2, 1, 2, 1}
+        int g = idx / 5, k = idx - 5 * g, gs = start + g * (5 * nb + 8);
+        uint m = rbits(b, gs + k * nb + (k * 7 + 2) / 4, nb);
+        uint T = 0u;
+        for (int j = 0; j < 5; j++) {
+            int ts = (j * 7 + 2) / 4, tb = j == 2 || j == 4 ? 1 : 2;
+            if (5 * g + j < count) T |= rbits(b, gs + (j + 1) * nb + ts, tb) << uint(ts);
+        }
+        return uint(trit_at(T, k)) << uint(nb) | m;
+    }
+    if (q_quint(q)) {
+        // qs = {0, 3, 5}, qb = {3, 2, 2}
+        int g = idx / 3, k = idx - 3 * g, gs = start + g * (3 * nb + 7);
+        uint m = rbits(b, gs + k * nb + (k == 0 ? 0 : k == 1 ? 3 : 5), nb);
+        uint Q = 0u;
+        for (int j = 0; j < 3; j++) {
+            int qs = j == 0 ? 0 : j == 1 ? 3 : 5, qb = j == 0 ? 3 : 2;
+            if (3 * g + j < count) Q |= rbits(b, gs + (j + 1) * nb + qs, qb) << uint(qs);
+        }
+        return uint(quint_at(Q, k)) << uint(nb) | m;
+    }
+    return rbits(b, start + idx * nb, nb);
+}
+
+uint hash52(uint p) {
+    p ^= p >> 15; p -= p << 17; p += p << 7; p += p << 4;
+    p ^= p >> 5;  p += p << 16; p ^= p >> 7; p ^= p >> 3;
+    p ^= p << 6;  p ^= p >> 17;
+    return p;
+}
+
+int part_of(int seed, int count, int x, int y) {
+    seed += (count - 1) * 1024;
+    uint rnum = hash52(uint(seed));
+    int sh1, sh2;
+    if ((seed & 1) != 0) { sh1 = (seed & 2) != 0 ? 4 : 5; sh2 = count == 3 ? 6 : 5; }
+    else { sh1 = count == 3 ? 6 : 5; sh2 = (seed & 2) != 0 ? 4 : 5; }
+    int s[8];
+    for (int i = 0; i < 8; i++) {
+        int v = int((rnum >> uint(4 * i)) & 0xFu);
+        s[i] = (v * v) >> ((i & 1) != 0 ? sh2 : sh1);
+    }
+    int a = int((uint(s[0] * x + s[1] * y) + (rnum >> 14)) & 0x3Fu);
+    int b = int((uint(s[2] * x + s[3] * y) + (rnum >> 10)) & 0x3Fu);
+    int c = count >= 3 ? int((uint(s[4] * x + s[5] * y) + (rnum >> 6)) & 0x3Fu) : 0;
+    int d = count >= 4 ? int((uint(s[6] * x + s[7] * y) + (rnum >> 2)) & 0x3Fu) : 0;
+    if (a >= b && a >= c && a >= d) return 0;
+    if (b >= c && b >= d) return 1;
+    if (c >= d) return 2;
+    return 3;
+}
+
+int clamp255(int v) { return clamp(v, 0, 255); }
+
+// v: the partition's unquantized colour values. False for an HDR mode.
+bool unpack_endpoints(int cem, int v[8], out ivec4 e0, out ivec4 e1) {
+    e0 = ivec4(0); e1 = ivec4(0);
+    switch (cem) {
+    case 0:
+        e0 = ivec4(v[0], v[0], v[0], 255); e1 = ivec4(v[1], v[1], v[1], 255);
+        return true;
+    case 1: {
+        int l0 = v[0] >> 2 | (v[1] & 0xC0);
+        int l1 = min(l0 + (v[1] & 0x3F), 255);
+        e0 = ivec4(l0, l0, l0, 255); e1 = ivec4(l1, l1, l1, 255);
+        return true;
+    }
+    case 4:
+        e0 = ivec4(v[0], v[0], v[0], v[2]); e1 = ivec4(v[1], v[1], v[1], v[3]);
+        return true;
+    case 5: {
+        int l0 = v[0], l1 = v[1], a0 = v[2], a1 = v[3];
+        l0 |= (l1 & 0x80) << 1; a0 |= (a1 & 0x80) << 1;
+        l1 &= 0x7F; a1 &= 0x7F;
+        if ((l1 & 0x40) != 0) l1 -= 0x80;
+        if ((a1 & 0x40) != 0) a1 -= 0x80;
+        l0 >>= 1; a0 >>= 1; l1 >>= 1; a1 >>= 1;
+        l1 = clamp255(l1 + l0); a1 = clamp255(a1 + a0);
+        e0 = ivec4(l0, l0, l0, a0); e1 = ivec4(l1, l1, l1, a1);
+        return true;
+    }
+    case 6:
+    case 10: {
+        int s = v[3];
+        e1 = ivec4(v[0], v[1], v[2], 255);
+        e0 = ivec4(v[0] * s >> 8, v[1] * s >> 8, v[2] * s >> 8, 255);
+        if (cem == 10) { e0.w = v[4]; e1.w = v[5]; }
+        return true;
+    }
+    case 8:
+    case 12: {
+        ivec4 a = ivec4(v[0], v[2], v[4], cem == 12 ? v[6] : 0);
+        ivec4 b = ivec4(v[1], v[3], v[5], cem == 12 ? v[7] : 0);
+        if (a.x + a.y + a.z > b.x + b.y + b.z) {
+            e0 = b; e1 = a;
+            e0.x = (e0.x + e0.z) >> 1; e0.y = (e0.y + e0.z) >> 1;
+            e1.x = (e1.x + e1.z) >> 1; e1.y = (e1.y + e1.z) >> 1;
+        } else {
+            e0 = a; e1 = b;
+        }
+        if (cem == 8) { e0.w = 255; e1.w = 255; }
+        return true;
+    }
+    case 9:
+    case 13: {
+        ivec4 a = ivec4(0), b = ivec4(0);
+        for (int c = 0; c < 4; c++) {
+            if (c == 3 && cem != 13) break;
+            int base = v[2 * c], delta = v[2 * c + 1];
+            a[c] = base >> 1 | (delta & 0x80);
+            int d = (delta >> 1) & 0x3F;
+            if ((d & 0x20) != 0) d -= 0x40;
+            b[c] = d;
+        }
+        int sum = b.x + b.y + b.z;
+        b += a;
+        if (sum < 0) {
+            e0 = b; e1 = a;
+            e0.x = (e0.x + e0.z) >> 1; e0.y = (e0.y + e0.z) >> 1;
+            e1.x = (e1.x + e1.z) >> 1; e1.y = (e1.y + e1.z) >> 1;
+        } else {
+            e0 = a; e1 = b;
+        }
+        e0 = clamp(e0, ivec4(0), ivec4(255)); e1 = clamp(e1, ivec4(0), ivec4(255));
+        if (cem == 9) { e0.w = 255; e1.w = 255; }
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
+const uint MAGENTA = 0xFFFF00FFu;
+
+// What every texel of a block needs from its header (tex_astc.c astc_decode_block up to the weight infill).
+struct Hdr {
+    uint konst;      // the colour of a void-extent or error block
+    bool solid;      // konst is the whole block
+    int wx, wy, dual, quant, wtotal, pcount, cem0, cem1, cem2, cem3, n0, n1, n2, ccount, cq, ccs;
+};
+
+Hdr header(uvec4 b, int bw, int bh) {
+    Hdr H;
+    H.solid = true; H.konst = MAGENTA;
+    H.wx = 0; H.wy = 0; H.dual = 0; H.quant = 0; H.wtotal = 0; H.pcount = 1;
+    H.cem0 = 0; H.cem1 = 0; H.cem2 = 0; H.cem3 = 0; H.n0 = 0; H.n1 = 0; H.n2 = 0; H.ccount = 0; H.cq = 20; H.ccs = -1;
+    uint mode = b.x & 0x7FFu;
+    if ((mode & 0x1FFu) == 0x1FCu) {   // void extent
+        if ((mode & 0x200u) != 0u || ((b.x >> 10) & 3u) != 3u) return H;
+        uint s0 = rbits(b, 12, 13), s1 = rbits(b, 25, 13), t0 = rbits(b, 38, 13), t1 = rbits(b, 51, 13);
+        bool all_ones = s0 == 0x1FFFu && s1 == 0x1FFFu && t0 == 0x1FFFu && t1 == 0x1FFFu;
+        if ((s0 >= s1 || t0 >= t1) && !all_ones) return H;
+        H.konst = (b.z >> 8 & 0xFFu) | (b.z >> 24) << 8 | (b.w >> 8 & 0xFFu) << 16 | (b.w >> 24) << 24;
+        return H;
+    }
+
+    // block mode (tex_astc.c block_mode_2d)
+    uint m = mode;
+    uint r = (m >> 4) & 1u, h = (m >> 9) & 1u, d = (m >> 10) & 1u, a = (m >> 5) & 3u;
+    int wx, wy;
+    if ((m & 3u) != 0u) {
+        r |= (m & 3u) << 1;
+        uint bb = (m >> 7) & 3u;
+        uint sel = (m >> 2) & 3u;
+        if (sel == 0u) { wx = int(bb) + 4; wy = int(a) + 2; }
+        else if (sel == 1u) { wx = int(bb) + 8; wy = int(a) + 2; }
+        else if (sel == 2u) { wx = int(a) + 2; wy = int(bb) + 8; }
+        else {
+            bb &= 1u;
+            if ((m & 0x100u) != 0u) { wx = int(bb) + 2; wy = int(a) + 2; }
+            else { wx = int(a) + 2; wy = int(bb) + 6; }
+        }
+    } else {
+        r |= ((m >> 2) & 3u) << 1;
+        if (((m >> 2) & 3u) == 0u) return H;
+        uint bb = (m >> 9) & 3u;
+        uint sel = (m >> 7) & 3u;
+        if (sel == 0u) { wx = 12; wy = int(a) + 2; }
+        else if (sel == 1u) { wx = int(a) + 2; wy = 12; }
+        else if (sel == 2u) { wx = int(a) + 6; wy = int(bb) + 6; d = 0u; h = 0u; }
+        else {
+            if (a == 0u) { wx = 6; wy = 10; }
+            else if (a == 1u) { wx = 10; wy = 6; }
+            else return H;
+        }
+    }
+    int dual = int(d);
+    int wtotal = (wx * wy) << dual;
+    int quant = int(r) - 2 + 6 * int(h);
+    int wbits = ise_bitcount(wtotal, quant);
+    if (wtotal > 64 || wbits < 24 || wbits > 96 || wx > bw || wy > bh) return H;
+    int pcount = int((b.x >> 11) & 3u) + 1;
+    if (dual != 0 && pcount == 4) return H;
+
+    // colour endpoint modes
+    int cem0, cem1 = 0, cem2 = 0, cem3 = 0;
+    int below = 128 - wbits, high = 0;
+    if (pcount == 1) {
+        cem0 = int((b.x >> 13) & 0xFu);
+    } else {
+        high = 3 * pcount - 4;
+        below -= high;
+        uint enc = ((b.x >> 23) & 0x3Fu) | rbits(b, below, high) << 6;
+        uint base = enc & 3u;
+        if (base == 0u) {
+            cem0 = cem1 = cem2 = cem3 = int((enc >> 2) & 0xFu);
+            below += high;
+            high = 0;
+        } else {
+            base--;
+            cem0 = int((((enc >> 2) & 1u) + base) << 2 | ((enc >> uint(2 + pcount)) & 3u));
+            cem1 = int((((enc >> 3) & 1u) + base) << 2 | ((enc >> uint(4 + pcount)) & 3u));
+            cem2 = int((((enc >> 4) & 1u) + base) << 2 | ((enc >> uint(6 + pcount)) & 3u));
+            cem3 = int((((enc >> 5) & 1u) + base) << 2 | ((enc >> uint(8 + pcount)) & 3u));
+        }
+    }
+    int n0 = ((cem0 >> 2) + 1) * 2, n1 = pcount > 1 ? ((cem1 >> 2) + 1) * 2 : 0;
+    int n2 = pcount > 2 ? ((cem2 >> 2) + 1) * 2 : 0, n3 = pcount > 3 ? ((cem3 >> 2) + 1) * 2 : 0;
+    int ccount = n0 + n1 + n2 + n3;
+    if (ccount > 18) return H;
+    int cbits = max((pcount == 1 ? 111 : 99) - wbits - high - (dual != 0 ? 2 : 0), 0);
+    int cq = -1;
+    for (int q = 20; q >= 0; q--) {
+        if (ise_bitcount(ccount, q) <= cbits) { cq = q; break; }
+    }
+    if (cq < 4) return H;   // QUANT_6
+
+    H.solid = false;
+    H.wx = wx; H.wy = wy; H.dual = dual; H.quant = quant; H.wtotal = wtotal; H.pcount = pcount;
+    H.cem0 = cem0; H.cem1 = cem1; H.cem2 = cem2; H.cem3 = cem3; H.n0 = n0; H.n1 = n1; H.n2 = n2;
+    H.ccount = ccount; H.cq = cq;
+    H.ccs = dual != 0 ? int(rbits(b, below - 2, 2)) : -1;
+    return H;
+}
+
+// A workgroup decodes BPW blocks of one block row when a block has 64 texels or fewer, else one block: S lanes per block
+// (its texels, at most 64). The lanes decode weights and colour values into shared memory, the first pcount lanes unpack the endpoints.
+const int MAXB = 4;   // 4x4: 4 blocks of 16 lanes
+shared uint s_w[MAXB][64];       // unquantized weights 0..64 (dual plane: interleaved as in the bit stream)
+shared int s_cv[MAXB][18];       // unquantized colour values
+shared uvec2 s_e0[MAXB][4], s_e1[MAXB][4];   // 16-bit endpoints, two channels per uint
+
+uvec2 pack16(ivec4 e) { return uvec2(uint(e.x) | uint(e.y) << 16, uint(e.z) | uint(e.w) << 16); }
+int ch16(uvec2 p, int c) { return int(((c < 2 ? p.x : p.y) >> (16 * (c & 1))) & 0xFFFFu); }
+
+void main() {
+    int bw = int(pc.bw), bh = int(pc.bh), G = bw * bh;
+    int bpw = G <= 64 ? 64 / G : 1, S = G <= 64 ? G : 64;
+    int l = int(gl_LocalInvocationID.x), lb = l / S, lane = l - lb * S;
+    bool live = lb < bpw;
+    int bxi = int(gl_WorkGroupID.x) * bpw + lb, byi = int(gl_WorkGroupID.y);
+    live = live && bxi < int(pc.bx);
+    lb = min(lb, MAXB - 1);
+    uvec4 b = live ? blk[pc.in_base + gl_WorkGroupID.z * pc.bslice + uint(byi) * pc.bx + uint(bxi)] : uvec4(0u);
+    Hdr H = header(b, bw, bh);
+    bool work = live && !H.solid;
+
+    if (work) {
+        uvec4 rev = uvec4(bitfieldReverse(b.w), bitfieldReverse(b.z), bitfieldReverse(b.y), bitfieldReverse(b.x));
+        uint wrow = tab[H.quant];
+        for (int j = lane; j < H.wtotal; j += S) s_w[lb][j] = tab_byte(wrow + ise_at(rev, 0, H.wtotal, H.quant, j));
+        uint crow = H.cq == 20 ? 0u : tab[12 + H.cq - 4];
+        int cstart = H.pcount == 1 ? 17 : 29;
+        for (int j = lane; j < H.ccount; j += S) {
+            uint raw = ise_at(b, cstart, H.ccount, H.cq, j);
+            s_cv[lb][j] = H.cq == 20 ? int(raw) : int(tab_byte(crow + raw));
+        }
+    }
+    barrier();
+    if (work && lane < H.pcount) {
+        int p = lane;
+        int cem = p == 0 ? H.cem0 : p == 1 ? H.cem1 : p == 2 ? H.cem2 : H.cem3;
+        int k = p == 0 ? 0 : p == 1 ? H.n0 : p == 2 ? H.n0 + H.n1 : H.n0 + H.n1 + H.n2;
+        int n = ((cem >> 2) + 1) * 2;
+        int v[8];
+        for (int j = 0; j < 8; j++) {
+            v[j] = 0;
+            if (j < n) v[j] = s_cv[lb][k + j];
+        }
+        ivec4 e0, e1;
+        if (!unpack_endpoints(cem, v, e0, e1)) { e0 = ivec4(0xFF, 0, 0xFF, 0xFF); e1 = e0; }
+        if (pc.srgb != 0u) { e0 = e0 << 8 | 0x80; e1 = e1 << 8 | 0x80; }
+        else { e0 *= 257; e1 *= 257; }
+        s_e0[lb][p] = pack16(e0);
+        s_e1[lb][p] = pack16(e1);
+    }
+    barrier();
+    if (!live) return;
+
+    bool small = G < 32;
+    int seed = int((b.x >> 13) & 0x3FFu);
+    int sx = int((1024 + bw / 2) / (bw - 1)), sy = int((1024 + bh / 2) / (bh - 1));
+    for (int t = lane; t < G; t += S) {
+        int x = t % bw, y = t / bw;
+        uint gx = uint(bxi * bw + x), gy = uint(byi * bh + y);
+        if (gx >= pc.width || gy >= pc.height) continue;
+        uint o = H.konst;
+        if (!H.solid) {
+            int p = H.pcount > 1 ? part_of(seed, H.pcount, small ? x << 1 : x, small ? y << 1 : y) : 0;
+            int vx = (sx * x * (H.wx - 1) + 32) >> 6, vy = (sy * y * (H.wy - 1) + 32) >> 6;
+            int fs = vx & 0xF, ft = vy & 0xF;
+            int i0 = (vy >> 4) * H.wx + (vx >> 4);
+            int w11 = (fs * ft + 8) >> 4, w10 = fs - w11, w01 = ft - w11, w00 = 16 - fs - ft + w11;
+            int wcount = H.wx * H.wy;
+            int w[2];
+            for (int pl = 0; pl < 2; pl++) {
+                w[pl] = 0;
+                if (pl > H.dual) continue;
+                int acc = 0;
+                for (int c = 0; c < 4; c++) {
+                    int idx = i0 + (c == 0 ? 0 : c == 1 ? 1 : c == 2 ? H.wx : H.wx + 1);
+                    int f = c == 0 ? w00 : c == 1 ? w10 : c == 2 ? w01 : w11;
+                    if (f == 0 || idx >= wcount) continue;
+                    acc += int(s_w[lb][H.dual != 0 ? 2 * idx + pl : idx]) * f;
+                }
+                w[pl] = (acc + 8) >> 4;
+            }
+            uvec2 q0 = s_e0[lb][p], q1 = s_e1[lb][p];
+            o = 0u;
+            for (int c = 0; c < 4; c++) {
+                int wc = c == H.ccs ? w[1] : w[0];
+                o |= uint((ch16(q0, c) * (64 - wc) + ch16(q1, c) * wc + 32) >> 14) << uint(8 * c);
+            }
+        }
+        px[pc.out_base + (gl_WorkGroupID.z * pc.height + gy) * pc.width + gx] = o;
+    }
+}

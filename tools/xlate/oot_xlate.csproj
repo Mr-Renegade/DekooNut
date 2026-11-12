@@ -1,0 +1,16 @@
+<!-- TOTK runtime shader translator: Switch Maxwell code -> SPIR-V (Vulkan) via the Ryujinx 1.3.2 shader translator.
+     Adapted from MacNativeGames games/totk/tools/totk_xlate/totk_xlate.csproj (MIT). -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- tools/build_xlate.py passes the patched copy under build/xlate/ryujinx. -->
+    <RyuSrc Condition="'$(RyuSrc)' == ''">$(MSBuildThisFileDirectory)../vendor/ryujinx</RyuSrc>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(RyuSrc)/src/Ryujinx.Graphics.Shader/Ryujinx.Graphics.Shader.csproj" />
+    <ProjectReference Include="$(RyuSrc)/src/Ryujinx.Common/Ryujinx.Common.csproj" />
+  </ItemGroup>
+</Project>

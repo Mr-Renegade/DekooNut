@@ -1,0 +1,15 @@
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Declarations.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Declarations.cs
+@@ -229,6 +229,12 @@
+ 
+             foreach (TextureDefinition image in images)
+             {
++                // Explicit NVN image formats include RG16UI, R16F and R11G11B10F.
++                // SPIR-V requires this capability for extended storage formats.
++                if (image.Format != TextureFormat.Unknown)
++                {
++                    context.AddCapability(Capability.StorageImageExtendedFormats);
++                }
+                 int setIndex = context.TargetApi == TargetApi.Vulkan ? image.Set : 0;
+ 
+                 Dim dim = GetDim(image.Type);

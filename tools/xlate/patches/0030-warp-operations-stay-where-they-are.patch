@@ -1,0 +1,55 @@
+diff --git a/src/Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs b/src/Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs
+index 4a267b6..e2f71c9 100644
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs
+@@ -27,7 +27,12 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+                         // use, and removing the assignment removed the operation itself (the reduction kernel c7830fac
+                         // lost its atomicMin on 2026-10-13; every translation ran in DebugMode since, to avoid this).
+                         bool sideEffects = HasSideEffects(assignment.Source);
+-                        bool isWorthPropagating = !sideEffects && (propVar.Uses.Count == 1 || IsWorthPropagating(assignment.Source));
++                        // OoT native (2026-11-06): a warp operation means what it means where it stands, with the lanes active there.
++                        // Moved to its use, VOTE's ballot in `leader = first(ballot); if (lane == leader) atomicAdd(n, popc(ballot))`
++                        // ran with only the leader active: every warp reserved 1 slot and stored all its entries, so warps
++                        // overwrote each other's list entries at random (the foliage flicker).
++                        bool pinned = sideEffects || ReadsOtherLanes(assignment.Source);
++                        bool isWorthPropagating = !pinned && (propVar.Uses.Count == 1 || IsWorthPropagating(assignment.Source));
+ 
+                         // TOTK: SPIR-V passes call arguments by pointer to a variable (StructuredProgram copies them
+                         // into temporaries); folding an expression into a call argument breaks GenerateCall.
+@@ -51,6 +56,36 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+             RemoveEmptyBlocks(mainBlock);
+         }
+ 
++        private static bool ReadsOtherLanes(IAstNode source)
++        {
++            if (source is AstOperation op)
++            {
++                switch (op.Inst & Instruction.Mask)
++                {
++                    case Instruction.Ballot:
++                    case Instruction.SwizzleAdd:
++                    case Instruction.Shuffle:
++                    case Instruction.ShuffleDown:
++                    case Instruction.ShuffleUp:
++                    case Instruction.ShuffleXor:
++                    case Instruction.VoteAll:
++                    case Instruction.VoteAllEqual:
++                    case Instruction.VoteAny:
++                        return true;
++                }
++
++                for (int index = 0; index < op.SourcesCount; index++)
++                {
++                    if (ReadsOtherLanes(op.GetSource(index)))
++                    {
++                        return true;
++                    }
++                }
++            }
++
++            return false;
++        }
++
+         private static bool HasSideEffects(IAstNode source)
+         {
+             if (source is AstOperation op)

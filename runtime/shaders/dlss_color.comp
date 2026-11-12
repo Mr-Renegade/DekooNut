@@ -1,0 +1,14 @@
+#version 450
+// DLSS's colour input, as Lichii 65e979ad ocarina_dlss_color.comp (GPL-3.0). The game's packing pass stored
+// sqrt(colour) in RGB9E5 for its upscaler; DLSS takes that tonemapped, perceptually coded colour as it is (LDR).
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D guest_color;
+layout(binding = 1, rgba16f) uniform writeonly image2D dlss_color;
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, imageSize(dlss_color)))) {
+        return;
+    }
+    imageStore(dlss_color, pixel, vec4(texelFetch(guest_color, pixel, 0).rgb, 1.0));
+}

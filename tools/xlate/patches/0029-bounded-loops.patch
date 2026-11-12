@@ -1,0 +1,80 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
+@@ -46,6 +46,7 @@
+         public int LocalMemoryId { get; private set; }
+         public int GeometryViewportMaskMemoryId { get; private set; } = -1;
+         public int SharedMemoryId { get; private set; }
++        public int LoopBudgetMemoryId { get; private set; } = -1;
+ 
+         public int LocalVertexDataMemoryId { get; private set; }
+         public int LocalTopologyRemapMemoryId { get; private set; }
+@@ -94,6 +95,13 @@
+                 GeometryViewportMaskMemoryId = AddMemoryDefinition("geometry_viewport_mask", AggregateType.U32);
+         }
+ 
++        public void SetLoopBudgetMemory()
++        {
++            // A distinct Private scalar shared by the emitted functions, as geometry_viewport_mask is.
++            if (LoopBudgetMemoryId < 0)
++                LoopBudgetMemoryId = AddMemoryDefinition("loop_budget", AggregateType.U32);
++        }
++
+         public void SetCurrentLocalMemory(int size, bool isUsed)
+         {
+             if (isUsed)
+--- a/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
+@@ -168,6 +168,12 @@
+                     context.Store(StorageKind.LocalMemory, resourceManager.GeometryViewportMaskMemoryId, Const(1));
+                 }
+ 
++                if (index == 0)
++                {
++                    resourceManager.SetLoopBudgetMemory();
++                    context.Store(StorageKind.LocalMemory, resourceManager.LoopBudgetMemoryId, Const(0));
++                }
++
+                 DecodedFunction function = program.GetFunctionById(index);
+ 
+                 foreach (Block block in function.Blocks)
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitFlowControl.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitFlowControl.cs
+@@ -276,6 +276,26 @@
+             }
+         }
+ 
++        // Back edges an invocation may run before it gives up. A game's loop can take its trip count from memory, and a value
++        // read wrongly can make it very long: bdcc9ddf7ca7cabd runs (n - 1) / 32 + 1 times with an unsigned n, so n = 0 is 2^27
++        // trips per warp, a GPU timeout (Xid 109) on the host's desktop. Worst case at this limit is well under a second.
++        private const int LoopBudget = 1 << 16;
++
++        private static void EmitLoopGuard(EmitterContext context)
++        {
++            int budget = context.ResourceManager.LoopBudgetMemoryId;
++            Operand count = context.IAdd(context.Load(StorageKind.LocalMemory, budget), Const(1));
++            context.Store(StorageKind.LocalMemory, budget, count);
++
++            Operand lblContinue = Label();
++            context.BranchIfFalse(lblContinue, context.ICompareGreaterUnsigned(count, Const(LoopBudget)));
++            if (context.PrepareForReturn())
++            {
++                context.Return();
++            }
++            context.MarkLabel(lblContinue);
++        }
++
+         private static void EmitBranch(EmitterContext context, ulong address)
+         {
+             InstOp op = context.CurrOp;
+@@ -288,6 +308,11 @@
+                 return;
+             }
+ 
++            if (address <= op.Address)
++            {
++                EmitLoopGuard(context);
++            }
++
+             Operand label = context.GetLabel(address);
+ 
+             Operand pred = Register(opCond.Pred, RegisterType.Predicate);

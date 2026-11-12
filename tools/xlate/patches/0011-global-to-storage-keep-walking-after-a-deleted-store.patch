@@ -1,0 +1,26 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -217,8 +217,13 @@
+ 
+             foreach (BasicBlock block in blocks)
+             {
+-                for (LinkedListNode<INode> node = block.Operations.First; node != null; node = node.Next)
++                // DKB: the next node is taken before the operation is processed. A failed store is deleted below, and a
++                // removed node's Next is null, which ended the walk of the block: every later global access in it
++                // reached the backend unconverted ("Invalid storage kind GlobalMemory").
++                for (LinkedListNode<INode> node = block.Operations.First, next; node != null; node = next)
+                 {
++                    next = node.Next;
++
+                     if (node.Value is not Operation operation)
+                     {
+                         continue;
+@@ -252,7 +257,7 @@
+                         }
+                         else
+                         {
+-                            node = nextNode;
++                            next = nextNode.Next;
+                         }
+                     }
+                     else if (operation.Inst == Instruction.Store &&

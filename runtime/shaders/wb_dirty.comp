@@ -1,0 +1,36 @@
+#version 460
+// Write-back of one chunk (at most 4 KiB, never across a page) per workgroup (vk_writeback.c wbd_record). m: VRAM mirror,
+// s: VRAM shadow of guest memory, g: guest memory. A chunk is written to g and s only where m and s differ.
+// counts: chunks written, words written (statistics).
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+layout(local_size_x = 256) in;
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer Words { uint w[]; };
+struct Chunk { uint64_t m, s, g; uint words, pad; };
+layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer Chunks { Chunk c[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer Counts { uint chunks, words; };
+layout(push_constant) uniform Push { Chunks list; Counts counts; uint first, n; } pc;
+shared uint differs;
+
+void main() {
+    if (gl_WorkGroupID.x >= pc.n) return;
+    Chunk c = pc.list.c[pc.first + gl_WorkGroupID.x];
+    Words m = Words(c.m), s = Words(c.s), g = Words(c.g);
+    uint i0 = gl_LocalInvocationIndex;
+    if (i0 == 0) differs = 0;
+    barrier();
+    uint any = 0;
+    for (uint i = i0; i < c.words; i += 256) any |= m.w[i] ^ s.w[i];
+    if (any != 0) atomicOr(differs, 1);
+    barrier();
+    if (differs == 0) return;
+    for (uint i = i0; i < c.words; i += 256) {
+        uint v = m.w[i];
+        g.w[i] = v;
+        s.w[i] = v;
+    }
+    if (i0 == 0) {
+        atomicAdd(pc.counts.chunks, 1);
+        atomicAdd(pc.counts.words, c.words);
+    }
+}

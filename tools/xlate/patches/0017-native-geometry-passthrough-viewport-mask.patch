@@ -1,0 +1,127 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
+@@ -197,6 +197,15 @@
+             }
+         }
+ 
++        public bool ExplicitGeometryPassthrough => _explicitGeometryPassthrough;
++        public bool ExplicitGeometryViewportMask { get; private set; }
++
++        private static bool WritesOnlyViewportMask(InstAst op)
++        {
++            return op.SrcA == RegisterConsts.RegisterZeroIndex && !op.P &&
++                   op.AlSize == AlSize._32 && op.Imm11 == AttributeConsts.ViewportMask;
++        }
++
+         public void SetGeometryPassthroughAttributes(int mask)
+         {
+             if (Stage != ShaderStage.Geometry || !Definitions.GpPassthrough ||
+@@ -206,15 +215,18 @@
+             }
+ 
+             // AST includes fixed builtins and physical/per-patch writes. OUT includes emission and cuts.
+-            // Reject decoded predicated forms too: this subset forwards inputs and only retains body side effects.
++            // Accepted absolute scalar mask writes use translator-owned invocation-private state.
++            // Generic instruction predication still guards accepted mask stores.
+             foreach (DecodedFunction function in _program)
+             foreach (Block block in function.Blocks)
+             foreach (InstOp op in block.OpCodes)
+             {
+-                if (op.Name == InstName.Ast || op.Name == InstName.Out)
+-                {
+-                    throw new NotSupportedException("Portable passthrough does not support explicit attribute writes or emission");
+-                }
++                if (op.Name == InstName.Out || (op.Name == InstName.Ast && !WritesOnlyViewportMask(new InstAst(op.RawOpCode))))
++                {
++                    throw new NotSupportedException("Portable passthrough supports no emission and no attribute writes but the viewport mask");
++                }
++
++                if (op.Name == InstName.Ast) ExplicitGeometryViewportMask = true;
+             }
+ 
+             AttributeUsage.SetGeometryPassthroughAttributes(mask);
+@@ -412,6 +424,8 @@
+         {
+             ResourceManager resourceManager = new(Definitions.Stage, GpuAccessor, GetResourceReservations());
+ 
++            if (ExplicitGeometryViewportMask) resourceManager.SetGeometryViewportMaskMemory();
++
+             if (IsTransformFeedbackEmulated)
+             {
+                 StructureType tfeDataStruct = new(new StructureField[]
+--- a/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
+@@ -162,6 +162,12 @@
+                     initializationOperations = context.OperationsCount;
+                 }
+ 
++                if (index == 0 && translatorContext.ExplicitGeometryViewportMask)
++                {
++                    // Initialize once, before guest code and calls; skipped stores retain the default mask.
++                    context.Store(StorageKind.LocalMemory, resourceManager.GeometryViewportMaskMemoryId, Const(1));
++                }
++
+                 DecodedFunction function = program.GetFunctionById(index);
+ 
+                 foreach (Block block in function.Blocks)
+--- a/src/Ryujinx.Graphics.Shader/Translation/EmitterContext.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/EmitterContext.cs
+@@ -365,6 +365,18 @@
+                     Operand y = this.Load(StorageKind.Input, IoVariable.Position, Const(primIndex), Const(1));
+                     Operand z = this.Load(StorageKind.Input, IoVariable.Position, Const(primIndex), Const(2));
+                     Operand w = this.Load(StorageKind.Input, IoVariable.Position, Const(primIndex), Const(3));
++
++                    if (TranslatorContext.ExplicitGeometryViewportMask)
++                    {
++                        // A viewport mask of 0 selects no viewport. Without the NV extension the primitive is moved outside the
++                        // clip volume, as in Eglantine's translate_program.cpp, EmitGeometryPassthrough.
++                        Operand mask = this.Load(StorageKind.LocalMemory, ResourceManager.GeometryViewportMaskMemoryId);
++                        Operand culled = this.ICompareEqual(mask, Const(0));
++                        x = this.ConditionalSelect(culled, ConstF(2.0f), x);
++                        y = this.ConditionalSelect(culled, ConstF(2.0f), y);
++                        z = this.ConditionalSelect(culled, ConstF(2.0f), z);
++                        w = this.ConditionalSelect(culled, ConstF(1.0f), w);
++                    }
+ 
+                     this.Store(StorageKind.Output, IoVariable.Position, null, Const(0), x);
+                     this.Store(StorageKind.Output, IoVariable.Position, null, Const(1), y);
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAttribute.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAttribute.cs
+@@ -132,6 +132,13 @@
+ 
+                     int offset = op.Imm11 + index * 4;
+ 
++                    if (context.TranslatorContext.ExplicitGeometryPassthrough)
++                    {
++                        // TranslatorContext.SetGeometryPassthroughAttributes admits only the viewport mask here.
++                        context.Store(StorageKind.LocalMemory, context.ResourceManager.GeometryViewportMaskMemoryId, Register(rd));
++                        continue;
++                    }
++
+                     if (!context.TranslatorContext.AttributeUsage.IsUsedOutputAttribute(offset))
+                     {
+                         return;
+--- a/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
+@@ -44,6 +44,7 @@
+         private readonly Dictionary<TextureInfo, TextureMeta> _usedImages;
+ 
+         public int LocalMemoryId { get; private set; }
++        public int GeometryViewportMaskMemoryId { get; private set; } = -1;
+         public int SharedMemoryId { get; private set; }
+ 
+         public int LocalVertexDataMemoryId { get; private set; }
+@@ -84,6 +85,13 @@
+ 
+             LocalMemoryId = -1;
+             SharedMemoryId = -1;
++        }
++
++        public void SetGeometryViewportMaskMemory()
++        {
++            // A distinct Private scalar is shared by emitted functions, never by guest LDL/STL addresses.
++            if (GeometryViewportMaskMemoryId < 0)
++                GeometryViewportMaskMemoryId = AddMemoryDefinition("geometry_viewport_mask", AggregateType.U32);
+         }
+ 
+         public void SetCurrentLocalMemory(int size, bool isUsed)
