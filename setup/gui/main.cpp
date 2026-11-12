@@ -168,6 +168,7 @@ static struct App {
 
     // from --info
     bool info_ready = false, installed = false, can_install = false;
+    bool desktop = false, desktop_known = false;   // the tick box "a shortcut on the desktop" (Windows)
     std::string version, game, dest, gpu, install_command;
     std::vector<std::string> missing;
     std::vector<Level> levels;
@@ -251,6 +252,7 @@ static void take_info(const std::string &line) {
     if (A.game.empty()) A.game = j["game"].s;
     if (A.dest.empty()) A.dest = j["dest"].s;
     A.gpu = j["gpu"].s;
+    if (!A.desktop_known) A.desktop = j["desktop"].b, A.desktop_known = true;   // later answers leave the tick as it is
     A.installed = j["installed"].b;
     A.install_command = j["install_command"].s;
     A.can_install = j["can_install"].b;
@@ -293,6 +295,7 @@ static void start_build() {
     }
     std::vector<std::string> args = backend_args({"--json", "--game", A.game, "--dest", A.dest});
     if (!A.levels.empty()) args.push_back("--quality"), args.push_back(A.levels[A.level].id);
+    if (A.desktop) args.push_back("--desktop-entry");
     start_run(args);
 }
 
@@ -695,7 +698,27 @@ static void view_form(float w, float s) {
 
     heading(2, "WHERE TO INSTALL (ABOUT 36 GB)", have_dest, s);
     if (field("##dest", A.dest, "Choose a folder", w, s)) SDL_ShowOpenFolderDialog(picked_dest, NULL, g_win, NULL, false);
+#ifdef _WIN32
+    // The Start menu entry is always written; the desktop is the player's, so a shortcut there is asked for.
+    ImGui::PushFont(F_SMALL);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 5 * s);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.5f * s);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3 * s, 3 * s));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemInnerSpacing, ImVec2(10 * s, 0));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(1, 0.9f, 0.75f, 0.06f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(1, 0.9f, 0.75f, 0.14f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(1, 0.9f, 0.75f, 0.20f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.96f, 0.74f, 0.28f, 0.40f));
+    ImGui::PushStyleColor(ImGuiCol_CheckMark, GOLD);
+    ImGui::PushStyleColor(ImGuiCol_Text, A.desktop ? TEXT : DIM);
+    ImGui::Checkbox("Also put a shortcut on the desktop", &A.desktop);
+    ImGui::PopStyleColor(6);
+    ImGui::PopStyleVar(4);
+    ImGui::PopFont();
+    gap(8 * s);
+#else
     gap(22 * s);
+#endif
 
     heading(3, "QUALITY", !A.levels.empty(), s);
     for (size_t i = 0; i < A.levels.size(); i++) {
@@ -841,7 +864,7 @@ static void view_done(float w, float s) {
     ImGui::TextColored(TEXT, "Ready to play");
     ImGui::PopFont();
     wrapped(F_BODY, DIM, (A.ended - A.started < 3000 ? std::string("Everything was up to date. ") : "Built in " + duration(A.ended - A.started) + ". ") +
-                             "DekooNut is in your " MENU ", with the icon from your game.", w);
+                             "DekooNut is in your " MENU + (A.desktop ? " and on your desktop" : "") + ", with the icon from your game.", w);
     for (auto &warn : A.warnings) wrapped(F_SMALL, ImVec4(0.95f, 0.72f, 0.42f, 1), warn, w);
     gap(26 * s);
     if (button("Play", w, s, true, true)) play();

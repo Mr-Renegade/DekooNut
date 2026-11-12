@@ -34,6 +34,7 @@ def main():
     ap.add_argument('--game', default='')
     ap.add_argument('--dest', default='')
     ap.add_argument('--quality')
+    ap.add_argument('--desktop-entry', action='store_true')
     ap.add_argument('--display')
     a = ap.parse_args()
     missing = a.scenario == 'missing'

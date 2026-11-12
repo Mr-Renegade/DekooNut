@@ -630,6 +630,11 @@ class Finish(Step):
         launcher.chmod(0o755)
         if not ctx.options.no_menu_entry:
             (self.shortcut if WIN else self.menu_entry)(ctx, launcher)
+        if getattr(ctx.options, 'desktop_entry', False):   # asked for: --desktop-entry, the window's tick box
+            if WIN:
+                self.shortcut(ctx, launcher, desktop=True)
+            else:
+                ctx.reporter.warning('A desktop shortcut is written on Windows only for now.')
 
     @staticmethod
     def ini(ctx, keys):
@@ -649,21 +654,24 @@ class Finish(Step):
         path.write_text(text, encoding='utf-8')
 
     @staticmethod
-    def shortcut(ctx, launcher):
-        """The Start menu entry. Its icon: dekoonut.ico from the game's picture (the icon step), else the program's."""
+    def shortcut(ctx, launcher, desktop=False):
+        """The Start menu entry, or with desktop the same shortcut on the desktop (wherever Windows keeps that folder:
+        it may be redirected). Its icon: dekoonut.ico from the game's picture (the icon step), else the program's."""
         icon = ctx.dest / 'dekoonut.ico'
         script = (
-            "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:LNK); "
-            "if ((Test-Path $env:LNK) -and $s.Description -ne $env:MARK) { exit 3 }; "
+            "$lnk = if ($env:LNK) { $env:LNK } else { Join-Path ([Environment]::GetFolderPath('Desktop')) 'DekooNut.lnk' }; "
+            "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk); "
+            "if ((Test-Path $lnk) -and $s.Description -ne $env:MARK) { exit 3 }; "
             "$s.TargetPath = $env:TARGET; $s.WorkingDirectory = $env:WORKDIR; $s.Description = $env:MARK; "
             "$s.WindowStyle = 7; $s.IconLocation = $env:ICON; $s.Save()")
-        env = dict(os.environ, LNK=str(MENU_ENTRY), TARGET=str(launcher), WORKDIR=str(ctx.dest),
+        env = dict(os.environ, LNK='' if desktop else str(MENU_ENTRY), TARGET=str(launcher), WORKDIR=str(ctx.dest),
                    MARK='DekooNut (written by setup)', ICON=str(icon if icon.is_file() else ctx.dest / OOT))
         r = subprocess.run(['powershell', '-NoProfile', '-Command', script], env=env, capture_output=True, text=True)
+        what, where = ('The desktop shortcut', 'DekooNut on the desktop') if desktop else ('The Start menu entry', MENU_ENTRY)
         if r.returncode == 3:
-            ctx.reporter.warning(f'{MENU_ENTRY} exists and was not written by setup: it is left as it is.')
+            ctx.reporter.warning(f'{where} exists and was not written by setup: it is left as it is.')
         elif r.returncode:
-            ctx.reporter.warning('The Start menu entry could not be written: ' + (r.stderr.strip()[:200] or 'unknown'))
+            ctx.reporter.warning(f'{what} could not be written: ' + (r.stderr.strip()[:200] or 'unknown'))
 
     @staticmethod
     def menu_entry(ctx, launcher):
