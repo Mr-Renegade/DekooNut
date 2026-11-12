@@ -2,7 +2,8 @@
 """What this PC has: CPU, GPU, memory, disk and the build tools. Nothing here changes the PC.
 
 System packages (a compiler, the libraries' headers) are named with the one command that installs them; the tools
-setup can get without root (fetch.py) are not asked of the player.
+setup can get without root (fetch.py) are not asked of the player. On Windows that is Python 3.14 and git only: the
+compiler and the libraries are fetched.
 """
 import os
 import shutil
@@ -23,12 +24,16 @@ HEADERS = {'vulkan/vulkan.h': 'libvulkan-dev', 'SDL3/SDL.h': 'libsdl3-dev', 'opu
            'vpx/vpx_decoder.h': 'libvpx-dev', 'dav1d/dav1d.h': 'libdav1d-dev', 'zstd.h': 'libzstd-dev',
            'zlib.h': 'zlib1g-dev'}
 STDCXX = 'g++'   # brings libstdc++'s headers and its static library, which the game links
+WINGET = {'git': 'Git.Git', 'Python 3.14': 'Python.Python.3.14'}
 
 
 def tool_env():
     """The environment of every tool setup runs: the fetched tools first on PATH."""
     env = dict(os.environ)
-    first = [ROOT / '.venv' / 'bin', ROOT / 'toolchain' / 'dotnet', ROOT / 'toolchain' / 'uv']
+    tc = ROOT / 'toolchain'
+    first = [ROOT / '.venv' / ('Scripts' if WIN else 'bin'), tc / 'dotnet', tc / 'uv']
+    if WIN:
+        first += [tc / 'llvm-mingw' / 'bin', tc / 'bin', tc / 'deps-mingw' / 'bin']
     env['PATH'] = os.pathsep.join([str(p) for p in first if p.is_dir()] + [env.get('PATH', '')])
     if (ROOT / 'toolchain' / 'dotnet' / ('dotnet' + EXE)).is_file():
         env['DOTNET_ROOT'] = str(ROOT / 'toolchain' / 'dotnet')
@@ -60,8 +65,11 @@ def _has_static_stdcxx(env):
 
 
 def missing_packages():
-    """[(what, apt package)] for everything that needs the system's package manager."""
+    """[(what, package)] for everything that needs the system's package manager."""
     env = tool_env()
+    if WIN:
+        return [(what, pkg) for what, pkg in WINGET.items()
+                if not (which('git', env) if what == 'git' else python314())]
     out = [(name, pkg) for name, pkg in PROGRAMS.items() if not which(name, env)]
     clang = which('clang', env)
     out += [(header, pkg) for header, pkg in HEADERS.items() if not _has_header(header, clang, env)]
@@ -72,6 +80,8 @@ def missing_packages():
 
 def install_command(missing):
     packages = sorted({pkg for _, pkg in missing})
+    if WIN:
+        return ' && '.join(f'winget install -e --id {pkg}' for pkg in packages)
     if shutil.which('apt-get') or shutil.which('apt'):
         return 'sudo apt install ' + ' '.join(packages)
     return ''   # another distribution: the names of what is missing have to do
@@ -89,11 +99,23 @@ def cpu_flags():
 
 def cpu_ok():
     """The build uses -march=x86-64-v3."""
+    if WIN:
+        import ctypes
+        return bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(40))   # PF_AVX2_INSTRUCTIONS_AVAILABLE
     flags = cpu_flags()
     return not flags or {'avx2', 'bmi2', 'fma', 'movbe'} <= flags
 
 
 def memory_bytes():
+    if WIN:
+        import ctypes
+
+        class Status(ctypes.Structure):
+            _fields_ = [('length', ctypes.c_ulong), ('load', ctypes.c_ulong)] + \
+                       [(n, ctypes.c_ulonglong) for n in ('total', 'avail', 'page', 'page_avail', 'virt', 'virt_avail',
+                                                          'ext')]
+        st = Status(length=ctypes.sizeof(Status))
+        return st.total if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)) else 0
     try:
         return os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
     except (ValueError, OSError):
@@ -127,8 +149,13 @@ def python314():
     """A Python with compression.zstd, for the tools that read the game's compressed files."""
     if sys.version_info >= (3, 14):
         return sys.executable
-    venv = ROOT / '.venv-py314' / 'bin' / 'python'
-    return str(venv) if venv.is_file() else shutil.which('python3.14')
+    venv = ROOT / '.venv-py314' / ('Scripts' if WIN else 'bin') / ('python' + EXE)
+    if venv.is_file():
+        return str(venv)
+    if WIN and shutil.which('py'):   # the Python launcher knows the installed versions
+        r = subprocess.run(['py', '-3.14', '-c', 'import sys; print(sys.executable)'], text=True, capture_output=True)
+        return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+    return shutil.which('python3.14')
 
 
 def python312():

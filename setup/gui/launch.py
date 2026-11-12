@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 
-from .. import ROOT, host
+from .. import ROOT, fetch, host
 
 HERE = ROOT / 'setup' / 'gui'
 IMGUI = ROOT / 'runtime' / 'third_party' / 'imgui'
@@ -24,9 +24,13 @@ def say(text, command=''):
     print(text + (f'\n\n    {command}\n' if command else ''), file=sys.stderr)
     if not command and 'Missing' not in text:
         return
-    if sys.stderr.isatty():
+    if sys.stderr and sys.stderr.isatty():
         return
     body = text + (f'\n\n{command}' if command else '')
+    if host.WIN:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, body, 'DekooNut setup', 0x10)
+        return
     for tool in (['zenity', '--error', '--no-wrap', '--title=DekooNut setup', f'--text={body}'],
                  ['kdialog', '--title', 'DekooNut setup', '--error', body]):
         if shutil.which(tool[0]):
@@ -40,14 +44,21 @@ def build(say=print):
     if EXE.is_file() and EXE.stat().st_mtime >= max(p.stat().st_mtime for p in inputs):
         return EXE
     env = host.tool_env()
-    need = [(what, pkg) for what, pkg in host.missing_packages() if what in ('clang++', 'clang', 'SDL3/SDL.h')]
-    if need:
-        say('The setup window needs a compiler and SDL3 before it can open. Missing: ' +
-            ', '.join(what for what, _ in need) + '.\nInstall them, then start setup again:',
-            host.install_command(host.missing_packages()))
-        return None
+    if host.WIN:
+        flags = windows_tools(say)
+        if flags is None:
+            return None
+    else:
+        need = [(what, pkg) for what, pkg in host.missing_packages() if what in ('clang++', 'clang', 'SDL3/SDL.h')]
+        if need:
+            say('The setup window needs a compiler and SDL3 before it can open. Missing: ' +
+                ', '.join(what for what, _ in need) + '.\nInstall them, then start setup again:',
+                host.install_command(host.missing_packages()))
+            return None
+        flags = ([], ['-lSDL3', '-lm'] + (['-fuse-ld=lld'] if host.which('ld.lld', env) else []))
     OUT.mkdir(parents=True, exist_ok=True)
     print('building the setup window ...', file=sys.stderr)
+    clang = host.which('clang++', host.tool_env())
     objects = []
     jobs = []
     for src in SOURCES:
@@ -55,18 +66,35 @@ def build(say=print):
         objects.append(obj)
         if obj.is_file() and obj.stat().st_mtime >= max(p.stat().st_mtime for p in [src] + inputs[len(SOURCES):]):
             continue
-        jobs.append(subprocess.Popen([host.which('clang++', env), '-std=c++17', '-O2', '-c', str(src), '-o', str(obj),
-                                      '-I', str(IMGUI), '-I', str(HERE), '-Wno-c99-extensions'], env=env))
+        jobs.append(subprocess.Popen([clang, '-std=c++17', '-O2', '-c', str(src), '-o', str(obj), '-I', str(IMGUI),
+                                      '-I', str(HERE), *flags[0]], env=host.tool_env()))
     if any(job.wait() for job in jobs):
         say('The setup window could not be compiled; the lines above say why.')
         return None
-    link = [host.which('clang++', env), *map(str, objects), '-o', str(EXE), '-lSDL3', '-lm']
-    if host.which('ld.lld', env):
-        link.append('-fuse-ld=lld')
-    if subprocess.run(link, env=env).returncode:
+    if subprocess.run([clang, *map(str, objects), '-o', str(EXE), *flags[1]], env=host.tool_env()).returncode:
         say('The setup window could not be linked; the lines above say why.')
         return None
+    if host.WIN:
+        shutil.copy2(ROOT / 'toolchain' / 'deps-mingw' / 'bin' / 'SDL3.dll', OUT / 'SDL3.dll')
     return EXE
+
+
+def windows_tools(say):
+    """(compile flags, link flags) on Windows, after fetching the compiler and SDL3 when they are not there yet."""
+    missing = host.missing_packages()
+    if missing:
+        say('Setup needs these first. Missing: ' + ', '.join(what for what, _ in missing) +
+            '.\nRun this in a terminal, then start setup again:', host.install_command(missing))
+        return None
+    if not fetch.win_ready():
+        print('fetching the compiler and the libraries into toolchain\\ (once, about 400 MB) ...', file=sys.stderr)
+        subprocess.run([host.python314(), str(ROOT / 'tools' / 'win_deps.py')])
+        if not fetch.win_ready():
+            say('The build tools could not be fetched; the lines above say why.')
+            return None
+    deps = ROOT / 'toolchain' / 'deps-mingw'
+    # -static for the C++ runtime; SDL3 stays a DLL, so its import library is named as a file.
+    return (['-I', str(deps / 'include')], [str(deps / 'lib' / 'libSDL3.dll.a'), '-static', '-mwindows'])
 
 
 def main(argv):

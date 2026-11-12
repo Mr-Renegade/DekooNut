@@ -14,6 +14,7 @@ import json
 import os
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -89,6 +90,22 @@ def cancel(signum, frame):
     raise KeyboardInterrupt
 
 
+def watch_cancel(ctx):
+    """A file <dest>/.setup/cancel asks for a stop: how the window cancels where a signal would not end the tools
+    setup started (Windows)."""
+    from .steps import stop
+    flag = ctx.work / 'cancel'
+    while True:
+        time.sleep(0.5)
+        if flag.is_file():
+            flag.unlink(missing_ok=True)
+            ctx.cancelled = True
+            child = ctx.child
+            if child:
+                stop(child)
+            return
+
+
 def lock(dest):
     """One setup per install folder; the OS drops the lock when the process ends."""
     try:
@@ -152,6 +169,8 @@ def main(argv=None):
         result = 'failed'
     else:
         ctx = Context(dest, rep, args, state=state)
+        (ctx.work / 'cancel').unlink(missing_ok=True)
+        threading.Thread(target=watch_cancel, args=(ctx,), daemon=True).start()
         try:
             result = run_steps(steps, ctx)
         except KeyboardInterrupt:   # a second Ctrl+C while the first is handled

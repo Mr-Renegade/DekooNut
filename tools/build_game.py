@@ -40,8 +40,9 @@ import romfs_index
 from build_shaders import stale as stale_shaders
 from check_content import GENERATED_MARKER
 
-WIN = os.name == 'nt'
-if not WIN:
+HOST_WIN = os.name == 'nt'
+WIN = HOST_WIN or '--windows' in sys.argv   # the target: --windows cross-builds oot.exe from another OS
+if not HOST_WIN:
     import resource
 ROOT = Path(__file__).resolve().parent.parent
 # In a git worktree build/ and generated/ may be junctions into the main checkout, and resolve() follows
@@ -57,9 +58,9 @@ def on_path(name):
     return Path(found) if found else Path('/usr/bin') / name
 
 
-CLANG = UCRT / 'clang.exe' if WIN else on_path('clang')
-NINJA = UCRT / 'ninja.exe' if WIN else on_path('ninja')
-WINDOW_DLLS = [UCRT / 'SDL3.dll', UCRT / 'libiconv-2.dll', UCRT / 'libopus-0.dll', UCRT / 'libdav1d-7.dll'] if WIN else []
+CLANG = UCRT / 'clang.exe' if HOST_WIN else on_path('clang')
+NINJA = UCRT / 'ninja.exe' if HOST_WIN else on_path('ninja')
+WINDOW_DLLS = [UCRT / 'SDL3.dll', UCRT / 'libiconv-2.dll', UCRT / 'libopus-0.dll', UCRT / 'libdav1d-7.dll'] if HOST_WIN else []
 
 # Flags for generated code, with -march for the FP/SIMD lowering.
 GEN_FLAGS = ['-O1', '-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-label', '-fvisibility=hidden',
@@ -117,7 +118,7 @@ INSTALL_SIDE = {'romfs.c', 'patches.c'}
 # takes its Linux loader. --dlss-sdk DIR, else OOT_DLSS_SDK.
 DLSS_SDK = None
 LIB_NAME = 'libootrt.a'
-AR = UCRT / 'llvm-ar.exe' if WIN else on_path('llvm-ar')
+AR = UCRT / 'llvm-ar.exe' if HOST_WIN else on_path('llvm-ar')
 WINDRES = UCRT / 'windres.exe'   # runtime/oot.rc: the Windows manifest
 TOOLCHAIN_BIN = None   # llvm-mingw bin directory, set by main() for --toolchain
 DEPS = None            # the deps directory of an llvm-mingw build
@@ -202,10 +203,10 @@ RUNTIME = ROOT / 'runtime'   # --runtime: a copy of runtime/ lets a task build w
 
 def other_os(name):
     """A runtime file for another OS: Win32 ones (*_win.*, platform/win32.c, oot.rc) off Windows, the SDL window's
-    (*_sdl.*) and platform/linux.c on Windows."""
+    (*_sdl.*), platform/linux.c and vk_dlss.c (vk_dlss_win.c stands in) on Windows."""
     stem = name.rsplit('.', 1)[0]
     if WIN:
-        return stem.endswith('_sdl') or name == 'linux.c'
+        return stem.endswith('_sdl') or name in ('linux.c', 'vk_dlss.c')
     return stem.endswith('_win') or name in ('win32.c', 'oot.rc')
 
 
@@ -403,7 +404,7 @@ def main_objects(gen, main_out, rt_dir, mods):
             pairs[o] = theirs
     # Ninja runs in the main checkout: the main build.ninja is relative to it, and the worktree's runtime/ files carry newer
     # mtimes that would make every object look stale. Header equality is checked byte for byte below.
-    env = dict(os.environ, PATH=str(UCRT) + os.pathsep + os.environ.get('PATH', '')) if WIN else dict(os.environ)
+    env = dict(os.environ, PATH=str(UCRT) + os.pathsep + os.environ.get('PATH', '')) if HOST_WIN else dict(os.environ)
     targets = [ninja_path(t) for t in pairs.values()]
     for i in range(0, len(targets), 200):
         r = subprocess.run([str(NINJA), '-f', str(main_ninja), '-n', '-d', 'explain'] + targets[i:i + 200], cwd=MAIN_ROOT,
@@ -574,7 +575,7 @@ CREATE_SUSPENDED = 0x4
 def run_measured(cmd, env):
     """Run cmd in its own job object. Returns (exit code, seconds, peak bytes of one process, peak bytes of all).
     Off Windows: the largest resident set of one child process, and 0 for all of them (no job accounting)."""
-    if not WIN:
+    if not HOST_WIN:
         t0 = time.monotonic()
         code = subprocess.call(cmd, cwd=ROOT, env=env)
         peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024   # KiB on Linux
@@ -612,7 +613,7 @@ def run_measured(cmd, env):
 
 
 def total_ram():
-    if not WIN:
+    if not HOST_WIN:
         return os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
 
     class MemStatus(ctypes.Structure):
@@ -695,6 +696,8 @@ def main():
                                                    'bin/llvm-ar) instead of the clang on PATH')
     ap.add_argument('--ninja', type=Path, help='ninja to build with (default: MSYS2 UCRT64 on Windows, ninja on PATH '
                                                'elsewhere, else bin/ninja)')
+    ap.add_argument('--windows', action='store_true', help='off Windows: build oot.exe with a cross llvm-mingw tree '
+                                                           '(--toolchain) and --deps')
     ap.add_argument('--sysroot', type=Path, help='Linux: the glibc headers and libraries to compile and link against '
                                                  'instead of the host\'s')
     ap.add_argument('--deps', type=Path, help=f'with --toolchain: include/, lib/ and bin/ of Vulkan, SDL3, Opus, libvpx '
@@ -718,15 +721,18 @@ def main():
     global CLANG, AR, WINDRES, NINJA, TOOLCHAIN_BIN, DEPS
     if args.ninja:
         NINJA = args.ninja.resolve()
-    elif not NINJA.is_file() and (ROOT / 'bin' / ('ninja' + ('.exe' if WIN else ''))).is_file():
-        NINJA = ROOT / 'bin' / ('ninja' + ('.exe' if WIN else ''))
+    elif not NINJA.is_file() and (ROOT / 'bin' / ('ninja' + ('.exe' if HOST_WIN else ''))).is_file():
+        NINJA = ROOT / 'bin' / ('ninja' + ('.exe' if HOST_WIN else ''))
     dlls = WINDOW_DLLS
-    suffix = '.exe' if WIN else ''
+    suffix = '.exe' if HOST_WIN else ''
+    if WIN and not HOST_WIN and not args.toolchain:
+        sys.exit('build_game: --windows needs --toolchain DIR (an llvm-mingw tree for this OS) and --deps DIR')
     if args.toolchain:
         TOOLCHAIN_BIN = (args.toolchain / 'bin').resolve()
-        CLANG = TOOLCHAIN_BIN / f'clang{suffix}'
+        # an llvm-mingw tree for another OS names its Windows compiler by the target
+        CLANG = TOOLCHAIN_BIN / (f'clang{suffix}' if HOST_WIN or not WIN else 'x86_64-w64-mingw32-clang')
         AR = TOOLCHAIN_BIN / f'llvm-ar{suffix}'
-        WINDRES = TOOLCHAIN_BIN / 'llvm-windres.exe'
+        WINDRES = TOOLCHAIN_BIN / f'llvm-windres{suffix}'
     if args.toolchain and WIN or args.deps and (args.toolchain or not WIN):   # Linux: --deps only, never deps-mingw
         DEPS = (args.deps or DEFAULT_DEPS).resolve()
         dlls = sorted((DEPS / 'bin').glob('*.dll')) if WIN else []
@@ -779,7 +785,7 @@ def main():
     if args.frame_pointers:
         RT_FLAGS.append('-fno-omit-frame-pointer')
     global DLSS_SDK
-    if (RUNTIME / 'vk_dlss.c').is_file() and 'vk_dlss.c' not in skip:
+    if not WIN and (RUNTIME / 'vk_dlss.c').is_file() and 'vk_dlss.c' not in skip:
         sdk = args.dlss_sdk or (Path(os.environ['OOT_DLSS_SDK']) if os.environ.get('OOT_DLSS_SDK') else None)
         if not sdk or not (sdk / 'include' / 'nvsdk_ngx_vk.h').is_file():
             sys.exit(f'build_game: runtime/vk_dlss.c needs the DLSS SDK (--dlss-sdk DIR or OOT_DLSS_SDK); '
@@ -820,7 +826,7 @@ def main():
     print(f'build_game: {nfiles} generated files in {len(linked)} modules ({", ".join(linked)}), {jobs} jobs', flush=True)
 
     code, dt, peak_one, peak_all = run_measured(base + ['objects'], env)
-    print(f'compile: {dt:.1f} s, peak {mib(peak_one)} per process' + (f', {mib(peak_all)} all processes' if WIN else ''))
+    print(f'compile: {dt:.1f} s, peak {mib(peak_one)} per process' + (f', {mib(peak_all)} all processes' if HOST_WIN else ''))
     if code:
         sys.exit(code)
     for mod, files in objs.items():

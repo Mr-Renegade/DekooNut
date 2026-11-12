@@ -18,6 +18,7 @@
 #include <sys/stat.h>
 #include <wchar.h>
 
+#include "cfg.h"
 #include "host.h"
 #include "platform/platform.h"
 #include "vk.h"
@@ -93,6 +94,7 @@ static int dlss_dir_beside_exe(char *dir, size_t cap) {
 }
 
 void vk_dlss_init(VkCtx *c) {
+    if (!strcmp(cfg_value("OOT_DLSS"), "off")) { rt_log("dlss: off (the dlss setting): the stand-in stays"); return; }
     if (c->props.vendorID != 0x10de) { rt_log("dlss: off, not an NVIDIA GPU (vendor %#x): the stand-in stays", c->props.vendorID); return; }
     char dir[1024], logs[1024];
     if (!dlss_dir_beside_exe(dir, sizeof dir)) {
@@ -148,9 +150,10 @@ static NVSDK_NGX_PerfQuality_Value mode_for(uint32_t rw, uint32_t ow, const char
     return *name = "Ultra Performance", NVSDK_NGX_PerfQuality_Value_UltraPerformance;
 }
 
-// Preset M.
+// Preset M; K with dlss = fast, at about half the GPU time (2.1 against 4.5 ms for 2560x1440 on an RTX 3070).
 static unsigned preset(char *letter) {
-    return *letter = 'M', NVSDK_NGX_DLSS_Hint_Render_Preset_J + (unsigned)('M' - 'J');
+    *letter = strcmp(cfg_value("OOT_DLSS"), "fast") ? 'M' : 'K';
+    return NVSDK_NGX_DLSS_Hint_Render_Preset_J + (unsigned)(*letter - 'J');
 }
 
 static int feature_for(VkCommandBuffer cb, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t oh, const char **why) {

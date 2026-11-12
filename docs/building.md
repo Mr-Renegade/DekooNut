@@ -70,6 +70,9 @@ The full steps from your own copy of the game to a running build. The short form
 - On the PC it was written on (16 threads, RTX 4080 SUPER, NVMe) a first install takes about 19 minutes: 43 s for the
   game data, 37 s to recompile, 4 minutes to compile the game, 13 minutes to prepare the shaders. A second run on
   the same folder with nothing changed takes seconds.
+- Windows: `setup.bat` and the build's Windows path are written (`tools/win_deps.py` fetches the compiler and the
+  libraries into `toolchain/`; it asks for Python 3.14 and git only) but have not run on Windows yet. A Windows build
+  has no DLSS for now.
 - Tests without game files: `python3 tests/setup_test.py` (the bookkeeping), and `tests/setup_fake.py`, a stand-in
   backend that plays a build for the window (`build/setup/gui/dekoonut-setup --root . --backend "python3
   tests/setup_fake.py"`).
@@ -177,9 +180,10 @@ Each reads `build/romfs-oot111` (never writes there) and writes the changed file
   at build time. `OOT_EXEFS` and `OOT_ROMFS` (or `--exefs`, `--romfs`, `--profile` on the command line) do the same
   for the game files.
 - `OOT_XLATE`: the translator. Without it: `oot_xlate` next to `oot`, else `build/xlate/oot_xlate` of the checkout.
-- With a game-data pack: `OOT_ROMFS_MODS=../gamedata/hs625 OOT_GFX_SCALE=0` (or `hs750`). The game serves the pack's
-  files in place of the originals and refuses a pack built from another RomFS. `OOT_GFX_SCALE=0` makes the game draw
-  at its full display size.
+- With a game-data pack: `OOT_ROMFS_MODS=../gamedata/hs625 OOT_GFX_SCALE=0` (or `hs750`), or the same as
+  `romfs_mods` and `gfx_scale` in `oot.ini`; a relative pack path starts at the folder of `oot`. The game serves the
+  pack's files in place of the originals and refuses a pack built from another RomFS. `gfx_scale = 0` makes the game
+  draw at its full display size.
 - Settings: `oot.ini` next to `oot` (copy `oot.ini.example`; each line shows the default). An `OOT_<KEY>` environment
   variable overrides the key of the same name. Many settings also change in the in-game menu.
 - The first start translates the shaders step 6 did not prepare, and draws a mesh shader only once

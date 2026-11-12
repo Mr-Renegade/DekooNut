@@ -1,11 +1,12 @@
-"""Build the shader translator: build/xlate/oot_xlate.exe (Ryujinx 1.3.2 + patches, NativeAOT, SPIR-V for Vulkan).
+"""Build the shader translator: build/xlate/oot_xlate (Ryujinx 1.3.2 + patches, SPIR-V for Vulkan).
 
 Copies tools/vendor/ryujinx to build/xlate/ryujinx, applies the selected tools/xlate/patches there (tools/vendor stays
 byte-identical), then runs `dotnet publish`. The default applies patches 0001-0013 and 0015-0023, preserving the fast floating
 min/max/clamp operations. Patch 0015 makes runtime storage-candidate resolution available only to explicit version-1
 NVN 2 compute requests; missing/version-0 requests retain the legacy pass. --defined-float-minmax also applies 0014's integer selection and numeric constant folding;
-this adds shader ALU work. Needs the .NET 10 SDK; on Windows also the MSVC build tools and vswhere.exe. On Linux it builds build/xlate/oot_xlate for linux-x64, which
-NativeAOT links with the system's clang (no MSVC); NativeAOT builds for the OS it runs on only.
+this adds shader ALU work. Needs the .NET 10 SDK. On Linux it builds build/xlate/oot_xlate for linux-x64 with NativeAOT,
+linked by the system's clang. On Windows it publishes oot_xlate.exe as one self-contained file with the .NET runtime
+inside (ReadyToRun), which needs no other build tools.
 
 Next to the exe it writes oot_xlate.id: the translator identity, a sha256 over everything the build reads (this script,
 Program.cs, the csproj, the selected patches, the vendor tree). runtime/gfx_shader.c puts it into every shader cache key, so a
@@ -32,7 +33,6 @@ XLATE = ROOT / "tools" / "xlate"
 BUILD = ROOT / "build" / "xlate"
 WIN = os.name == "nt"
 EXE = "oot_xlate.exe" if WIN else "oot_xlate"
-VSWHERE_DIR = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Microsoft Visual Studio" / "Installer"
 DEFINED_FLOAT_MINMAX_PATCH = "0014-numeric-float-minmax-and-saturation.patch"
 
 
@@ -156,10 +156,6 @@ def main() -> None:
     if not dotnet:
         sys.exit("missing: dotnet (.NET 10 SDK)")
     env = dict(os.environ)
-    if WIN:
-        if not (VSWHERE_DIR / "vswhere.exe").is_file() and not shutil.which("vswhere"):
-            sys.exit(f"missing: vswhere.exe (expected in {VSWHERE_DIR}); NativeAOT cannot link without it")
-        env["PATH"] = str(VSWHERE_DIR) + os.pathsep + env["PATH"]
 
     src = prepare_sources(defined_float_minmax=a.defined_float_minmax)
     work = BUILD / "xlate"
@@ -169,10 +165,13 @@ def main() -> None:
         shutil.copy2(XLATE / name, work / name)
     out = BUILD / "publish"
     shutil.rmtree(out, ignore_errors=True)
-    cmd = [
-        dotnet, "publish", str(work / "oot_xlate.csproj"), "-c", "Release", "-r", "win-x64" if WIN else "linux-x64",
-        "-p:PublishAot=true", "-p:InvariantGlobalization=true", f"-p:RyuSrc={src}", "-o", str(out),
-    ]
+    cmd = [dotnet, "publish", str(work / "oot_xlate.csproj"), "-c", "Release", "-p:InvariantGlobalization=true",
+           f"-p:RyuSrc={src}", "-o", str(out)]
+    if WIN:   # one self-contained file with the .NET runtime inside: NativeAOT would need the MSVC build tools
+        cmd += ["-r", "win-x64", "--self-contained", "true", "-p:PublishSingleFile=true", "-p:PublishReadyToRun=true",
+                "-p:IncludeNativeLibrariesForSelfExtract=true"]
+    else:
+        cmd += ["-r", "linux-x64", "-p:PublishAot=true"]
     if a.llvm:
         env["PATH"] = str(a.llvm.resolve() / "bin") + os.pathsep + env["PATH"]
         cmd += ["-p:CppCompilerAndLinker=clang", "-p:LinkerFlavor=lld"]

@@ -32,8 +32,11 @@ TOOLS = ROOT / 'build' / 'setup'
 ROMFS_NEED = 27 * GiB     # the RomFS image
 REST_NEED = 9 * GiB       # generated C, objects, the game, shader and pipeline caches
 ICON = 'dekoonut.png'
-LAUNCHER = 'dekoonut'
-MENU_ENTRY = Path.home() / '.local' / 'share' / 'applications' / 'dekoonut.desktop'
+WIN, EXE = host.WIN, host.EXE
+OOT, XLATE, MESH = 'oot' + EXE, 'oot_xlate' + EXE, 'oot_mesh_xlate' + EXE
+LAUNCHER = 'dekoonut.bat' if WIN else 'dekoonut'
+MENU_ENTRY = (Path(os.environ.get('APPDATA', Path.home())) / 'Microsoft' / 'Windows' / 'Start Menu' / 'Programs' /
+              'DekooNut.lnk') if WIN else Path.home() / '.local' / 'share' / 'applications' / 'dekoonut.desktop'
 MENU_MARK = 'X-DekooNut-Setup=1'
 AMOUNT = re.compile(r'(\d+)\s*(?:/|of)\s*(\d+)')
 
@@ -44,10 +47,11 @@ def run(ctx, cmd, env=None, cwd=ROOT, on_line=None, what=None):
     """Run a tool; its lines go to the log and to on_line(line). SetupError when it fails."""
     cmd = [str(c) for c in cmd]
     ctx.reporter.log('$ ' + ' '.join(cmd))
-    kw = {'start_new_session': True} if os.name != 'nt' else {}
+    # Below normal priority: the PC stays usable while setup compiles. A group of its own: a cancel ends the whole tree.
+    kw = {'creationflags': subprocess.BELOW_NORMAL_PRIORITY_CLASS | subprocess.CREATE_NEW_PROCESS_GROUP} if WIN \
+        else {'start_new_session': True, 'preexec_fn': _nice}
     proc = subprocess.Popen(cmd, cwd=cwd, env=env or host.tool_env(), stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True, errors='replace',
-                            preexec_fn=_nice if os.name != 'nt' else None, **kw)
+                            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True, errors='replace', **kw)
     ctx.child = proc
     tail = []
     try:
@@ -64,25 +68,27 @@ def run(ctx, cmd, env=None, cwd=ROOT, on_line=None, what=None):
         raise
     finally:
         ctx.child = None
+    if ctx.cancelled:
+        raise KeyboardInterrupt
     if code:
         raise SetupError(f'{what or Path(cmd[1] if len(cmd) > 1 else cmd[0]).name} failed (exit code {code}).',
                          '\n'.join(tail[-8:]))
 
 
 def _nice():
-    os.nice(10)   # the PC stays usable while setup compiles
+    os.nice(10)
 
 
 def stop(proc):
     """End a tool and everything it started."""
     try:
-        if os.name == 'nt':
-            proc.terminate()
+        if WIN:
+            subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)], capture_output=True)
         else:
             os.killpg(proc.pid, signal.SIGTERM)
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        if os.name != 'nt':
+        if not WIN:
             os.killpg(proc.pid, signal.SIGKILL)
         proc.wait()
     except ProcessLookupError:
@@ -198,7 +204,9 @@ def load_tool(name):
 
 
 def play_env(dest):
-    """What the launcher sets besides the quality level: a driver shader cache of the game's own."""
+    """What the launcher sets besides the quality level: a driver shader cache of the game's own (Linux driver)."""
+    if WIN:
+        return {}
     return {'__GL_SHADER_DISK_CACHE': '1', '__GL_SHADER_DISK_CACHE_PATH': str(dest / 'nvcache'),
             '__GL_SHADER_DISK_CACHE_SIZE': str(8 * GiB), '__GL_SHADER_DISK_CACHE_SKIP_CLEANUP': '1'}
 
@@ -280,10 +288,13 @@ class Tools(Step):
         return fetch.all_ready()
 
     def run(self, ctx):
-        fetch.venv312(ctx, run)
         fetch.venv314(ctx, run)
+        if WIN:
+            fetch.win_tools(ctx, run)
+        fetch.venv312(ctx, run)
         fetch.dotnet(ctx, run)
-        fetch.dlss(ctx, run)
+        if not WIN:
+            fetch.dlss(ctx, run)
 
 
 class Icon(Step):
@@ -306,7 +317,8 @@ class Icon(Step):
             else [['--romfs' if packed(src / 'romfs') else '--dir', src / 'romfs']]
         for args in tries:
             try:
-                run(ctx, [host.python314(), ROOT / 'tools' / 'game_icon.py', *args, '--out', out])
+                ico = ['--ico', ctx.dest / 'dekoonut.ico'] if WIN else []
+                run(ctx, [host.python314(), ROOT / 'tools' / 'game_icon.py', *args, '--out', out, *ico])
                 ctx.reporter.icon(out)
                 return {'from': 'game'}
             except SetupError as e:
@@ -436,15 +448,15 @@ class Translator(Step):
 
     def current(self, ctx, record):
         ident = ctx.dest / 'oot_xlate.id'
-        return (ctx.dest / 'oot_xlate').is_file() and ident.is_file() and ident.read_text().strip() == self.identity()
+        return (ctx.dest / XLATE).is_file() and ident.is_file() and ident.read_text().strip() == self.identity()
 
     def run(self, ctx):
         out = TOOLS / 'xlate'
         built = out / 'oot_xlate.id'
-        if not ((out / 'oot_xlate').is_file() and built.is_file() and built.read_text().strip() == self.identity()):
+        if not ((out / XLATE).is_file() and built.is_file() and built.read_text().strip() == self.identity()):
             ctx.progress('This takes a few minutes', force=True)
             run(ctx, [sys.executable, ROOT / 'tools' / 'build_xlate.py', '--out', out])
-        install(out / 'oot_xlate', ctx.dest / 'oot_xlate')
+        install(out / XLATE, ctx.dest / XLATE)
         install(built, ctx.dest / 'oot_xlate.id')
         return {'identity': self.identity()}
 
@@ -456,16 +468,17 @@ class Mesh(Step):
         return digest(tree_digest(ROOT / 'tools' / 'mesh', ROOT / 'tools' / 'build_mesh.py'))
 
     def current(self, ctx, record):
-        return (ctx.dest / 'oot_mesh_xlate').is_file() and (ctx.dest / 'mesh-cache').is_dir()
+        return (ctx.dest / MESH).is_file() and (ctx.dest / 'mesh-cache').is_dir()
 
     def run(self, ctx):
         out = TOOLS / 'mesh'
         stamp = out / '.setup-key'
-        if not ((out / 'oot_mesh_xlate').is_file() and stamp.is_file() and stamp.read_text() == ctx.keys['mesh']):
-            run(ctx, [sys.executable, ROOT / 'tools' / 'build_mesh.py', '--out', out,
+        if not ((out / MESH).is_file() and stamp.is_file() and stamp.read_text() == ctx.keys['mesh']):
+            toolchain = ['--toolchain', ROOT / 'toolchain'] if WIN else []
+            run(ctx, [sys.executable, ROOT / 'tools' / 'build_mesh.py', '--out', out, *toolchain,
                       '--jobs', host.jobs(ctx.options.jobs)], on_line=amounts(ctx, 'Compiling'))
             stamp.write_text(ctx.keys['mesh'])
-        install(out / 'oot_mesh_xlate', ctx.dest / 'oot_mesh_xlate')
+        install(out / MESH, ctx.dest / MESH)
         # The folder is the game's sign that the compiler beside it and this cache are its own.
         (ctx.dest / 'mesh-cache').mkdir(exist_ok=True)
 
@@ -479,8 +492,8 @@ class Game(Step):
                                   ROOT / 'tools' / 'romfs_index.py'))
 
     def current(self, ctx, record):
-        return (ctx.dest / 'oot').is_file() and (ctx.dest / 'romfs-index.bin').is_file() and \
-            any((ctx.dest / 'dlss').glob('libnvidia-ngx-dlss.so.*'))
+        return (ctx.dest / OOT).is_file() and (ctx.dest / 'romfs-index.bin').is_file() and \
+            (WIN or any((ctx.dest / 'dlss').glob('libnvidia-ngx-dlss.so.*')))
 
     def run(self, ctx):
         out = ctx.work / 'build'
@@ -489,13 +502,22 @@ class Game(Step):
         run(ctx, [host.python312(), ROOT / 'tools' / 'build_game.py', '--version', GAME, '--expected', EXPECTED,
                   '--exefs', ctx.dest / 'exefs', '--romfs', ctx.dest / 'romfs',
                   '--gen', ctx.work / 'generated' / GAME, '--out', out, '--profile', ctx.dest / 'profile',
-                  '--dlss-sdk', fetch.DLSS_DIR, '--full-build', *jobs],
+                  '--full-build', *self.system_args(), *jobs],
             on_line=amounts(ctx, 'Compiling'), what='The game build')
-        install(out / 'oot', ctx.dest / 'oot')
+        install(out / OOT, ctx.dest / OOT)
         install(out / 'romfs-index.bin', ctx.dest / 'romfs-index.bin')
-        model = fetch.dlss_model()
-        install(model, ctx.dest / 'dlss' / model.name)
-        return {'sha256': file_sha256(ctx.dest / 'oot')}
+        if WIN:
+            for dll in out.glob('*.dll'):   # the libraries the build put beside the program
+                install(dll, ctx.dest / dll.name)
+        else:
+            model = fetch.dlss_model()
+            install(model, ctx.dest / 'dlss' / model.name)
+        return {'sha256': file_sha256(ctx.dest / OOT)}
+
+    @staticmethod
+    def system_args():
+        tc = ROOT / 'toolchain'
+        return ['--toolchain', tc / 'llvm-mingw', '--deps', tc / 'deps-mingw'] if WIN else ['--dlss-sdk', fetch.DLSS_DIR]
 
 
 class Shaders(Step):
@@ -512,7 +534,7 @@ class Shaders(Step):
         dest = ctx.dest
         threads = max(2, min(6, (os.cpu_count() or 4) - 2))
         cmd = [host.python314(), ROOT / 'tools' / 'prepare_oot.py', dest, '--romfs', dest / 'romfs',
-               '--xlate', dest / 'oot_xlate', '--threads', threads, '--no-lock', '--slice', 0]
+               '--xlate', dest / XLATE, '--threads', threads, '--no-lock', '--slice', 0]
         ram = host.memory_bytes()
         if shutil.which('systemd-run') and ram:   # a memory cap: the driver's compiler can take a lot
             cap = max(6, min(14, ram * 7 // 10 // GiB))
@@ -520,7 +542,8 @@ class Shaders(Step):
                    'MemorySwapMax=2G', '-p', 'OOMPolicy=continue'] + cmd
         env = host.tool_env()
         env.update(play_env(dest))
-        (dest / 'nvcache').mkdir(exist_ok=True)
+        if not WIN:
+            (dest / 'nvcache').mkdir(exist_ok=True)
         done = threading.Event()
         watcher = threading.Thread(target=self.watch, args=(ctx, dest / 'prepare.log', done), daemon=True)
         watcher.start()
@@ -583,20 +606,28 @@ class Finish(Step):
         level = quality.level(ctx.state.get('quality'))
         self.ini(ctx, level.get('ini', {}))
         env = dict(level['env'])
-        lines = ['#!/bin/sh', '# Starts DekooNut. Setup writes this file again on every run.',
-                 'here=$(dirname "$(readlink -f "$0")")', 'cd "$here" || exit 1']
-        if level['pack']:
-            lines.append(f'export OOT_ROMFS_MODS="$here/gamedata/{level["pack"]}"')
-        lines += [f'export {k}="${{{k}:-{v}}}"' for k, v in env.items()]
-        cache = play_env(Path('$here'))
-        lines += ['# A driver shader cache of the game\'s own: the shared one is small and fills up.',
-                  'mkdir -p "$here/nvcache"'] + [f'export {k}="{v}"' for k, v in cache.items()]
-        lines += ['exec ./oot "$@"', '']
+        export_pack = level['pack'] and 'romfs_mods' not in level.get('ini', {})   # a level may name it in oot.ini
+        if WIN:
+            lines = ['@echo off', 'rem Starts DekooNut. Setup writes this file again on every run.', 'cd /d "%~dp0"']
+            if export_pack:
+                lines.append(f'set "OOT_ROMFS_MODS=%~dp0gamedata\\{level["pack"]}"')
+            lines += [f'if not defined {k} set "{k}={v}"' for k, v in env.items()]
+            lines += [f'start "" "%~dp0{OOT}" %*', '']
+        else:
+            lines = ['#!/bin/sh', '# Starts DekooNut. Setup writes this file again on every run.',
+                     'here=$(dirname "$(readlink -f "$0")")', 'cd "$here" || exit 1']
+            if export_pack:
+                lines.append(f'export OOT_ROMFS_MODS="$here/gamedata/{level["pack"]}"')
+            lines += [f'export {k}="${{{k}:-{v}}}"' for k, v in env.items()]
+            cache = play_env(Path('$here'))
+            lines += ['# A driver shader cache of the game\'s own: the shared one is small and fills up.',
+                      'mkdir -p "$here/nvcache"'] + [f'export {k}="{v}"' for k, v in cache.items()]
+            lines += [f'exec ./{OOT} "$@"', '']
         launcher = dest / LAUNCHER
-        launcher.write_text('\n'.join(lines), encoding='utf-8')
+        launcher.write_text(('\r\n' if WIN else '\n').join(lines), encoding='utf-8', newline='')
         launcher.chmod(0o755)
         if not ctx.options.no_menu_entry:
-            self.menu_entry(ctx, launcher)
+            (self.shortcut if WIN else self.menu_entry)(ctx, launcher)
 
     @staticmethod
     def ini(ctx, keys):
@@ -614,6 +645,23 @@ class Finish(Step):
                 text = '\n'.join(l for l in text.splitlines() if not (
                     '=' in l and l.partition('=')[0].strip().lower() == key.lower())) + '\n'
         path.write_text(text, encoding='utf-8')
+
+    @staticmethod
+    def shortcut(ctx, launcher):
+        """The Start menu entry. Its icon: dekoonut.ico from the game's picture (the icon step), else the program's."""
+        icon = ctx.dest / 'dekoonut.ico'
+        script = (
+            "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:LNK); "
+            "if ((Test-Path $env:LNK) -and $s.Description -ne $env:MARK) { exit 3 }; "
+            "$s.TargetPath = $env:TARGET; $s.WorkingDirectory = $env:WORKDIR; $s.Description = $env:MARK; "
+            "$s.WindowStyle = 7; $s.IconLocation = $env:ICON; $s.Save()")
+        env = dict(os.environ, LNK=str(MENU_ENTRY), TARGET=str(launcher), WORKDIR=str(ctx.dest),
+                   MARK='DekooNut (written by setup)', ICON=str(icon if icon.is_file() else ctx.dest / OOT))
+        r = subprocess.run(['powershell', '-NoProfile', '-Command', script], env=env, capture_output=True, text=True)
+        if r.returncode == 3:
+            ctx.reporter.warning(f'{MENU_ENTRY} exists and was not written by setup: it is left as it is.')
+        elif r.returncode:
+            ctx.reporter.warning('The Start menu entry could not be written: ' + (r.stderr.strip()[:200] or 'unknown'))
 
     @staticmethod
     def menu_entry(ctx, launcher):

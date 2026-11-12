@@ -1604,6 +1604,10 @@ static int nvn2_sizes(const uint8_t *control, uint32_t *ctl_size, uint32_t *len)
     return *ctl_size >= 0x40 && *ctl_size <= 0x10000 && *len && *len <= 0x400000;
 }
 
+int gfx_shader_nvn2_sizes(const uint8_t *control, uint32_t *ctl_size, uint32_t *len) {
+    return nvn2_sizes(control, ctl_size, len);
+}
+
 // FNV-1a over an NVN 2 stage's control and code: the dump file name. 0 when it is not one.
 uint64_t gfx_shader_nvn2_hash(const uint8_t *control, const uint8_t *code) {
     uint32_t ctl_size, len;

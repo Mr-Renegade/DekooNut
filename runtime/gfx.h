@@ -50,9 +50,12 @@ void gfx_shader_nvn2_dump_to(const char *dir, const uint8_t *control, const uint
 int gfx_shader_is_nvn2(const uint8_t *control);                          // NVN 2 control block (gfx_shader.c)
 #define GFX_GMEM_MAP_SLOT 0x7e   // SSBO cbuf_slot of the raw pool table
 uint64_t gfx_shader_nvn2_hash(const uint8_t *control, const uint8_t *code);  // dump file name, 0 if not NVN 2
+int gfx_shader_nvn2_sizes(const uint8_t *control, uint32_t *ctl_size, uint32_t *len);   // 0 when implausible
 int nvn2_is_tensor(const uint8_t *code);   // 1 when a lowered NVN 2 stage uses the tensor cores (HMMA/LDSM)
 uint64_t nvn2_origin_gen(void);              // changes when an origin is added (nvn2_lower.cpp)
 uint64_t nvn2_origin(const uint8_t *code);   // that name of the NVN 2 stage a lowered code buffer came from, or 0
+// 1 and the NVN 2 control and code a lowered task or mesh stage came from: what the mesh compiler reads
+int nvn2_origin_source(const uint8_t *code, const uint8_t **control, const uint8_t **raw);
 uint64_t nvn2_program_key(const uint8_t *control, const uint8_t *code);  // instruction-only native key
 int nvn2_native_kind(const uint8_t *control, const uint8_t *code); // original NVN 2 control stage, or -1
 int nvn2_native_prim_vertices(const uint8_t *control, const uint8_t *code); // NVN 2 control +0x5f (mesh: 1 points, 3 triangles), or -1

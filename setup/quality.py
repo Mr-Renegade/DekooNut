@@ -14,8 +14,8 @@ LEVELS = {
     'default': {
         'name': 'Default',
         'about': 'The settings the game is played and tested with: 4K output through DLSS at 60 fps.',
-        'pack': 'hs625', 'mods': ['dynres:0.625', 'heap:208'], 'env': {'OOT_GFX_SCALE': '0'},
-        'ini': {}, 'needs': {'vram_gb': 10, 'ram_gb': 16},
+        'pack': 'hs625', 'mods': ['dynres:0.625', 'heap:208'], 'env': {},
+        'ini': {'romfs_mods': 'gamedata/hs625', 'gfx_scale': '0'}, 'needs': {'vram_gb': 10, 'ram_gb': 16},
     },
 }
 DEFAULT = 'default'

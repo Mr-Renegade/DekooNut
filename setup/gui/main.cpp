@@ -9,6 +9,7 @@
 // --backend replaces `EXE -m setup` (tests/setup_fake.py plays a build); --shot saves the window as a PNG after S
 // seconds and exits; --autobuild presses Build once the form is filled; --click X,Y clicks there after a second.
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -191,6 +192,14 @@ static SDL_Mutex *g_pick_lock;
 static std::string g_picked_game, g_picked_dest;   // set by the dialog callbacks, on any thread
 static ImFont *F_TITLE, *F_HEAD, *F_ROW, *F_BODY, *F_SMALL, *F_MONO;
 static float g_font_scale;
+
+#ifdef _WIN32
+#define LAUNCHER "\\dekoonut.bat"
+#define MENU "Start menu"
+#else
+#define LAUNCHER "/dekoonut"
+#define MENU "applications menu"
+#endif
 
 static const float STEP_WEIGHT[] = {1, 3, 1, 1, 12, 10, 8, 6, 30, 25, 1, 1};
 
@@ -600,7 +609,27 @@ static void copy_text(const std::string &text) {
     A.copied = text, A.copied_at = SDL_GetTicks();
 }
 
-static void open_path(const std::string &path) { SDL_OpenURL(("file://" + path).c_str()); }
+static void open_path(const std::string &path) {
+    std::string url = "file://" + path;
+#ifdef _WIN32
+    url = "file:///" + path;
+    for (char &c : url)
+        if (c == '\\') c = '/';
+#endif
+    SDL_OpenURL(url.c_str());
+}
+
+// Stop the running build. Where ending the backend would leave its tools running, it is asked through a file it watches.
+static void cancel_build() {
+    A.cancelling = true;
+#ifdef _WIN32
+    if (SDL_IOStream *f = SDL_IOFromFile((A.dest + "\\.setup\\cancel").c_str(), "wb")) {
+        SDL_CloseIO(f);
+        return;
+    }
+#endif
+    g_build.cancel();
+}
 
 static void quit() {
     SDL_Event ev = {SDL_EVENT_QUIT};
@@ -608,7 +637,11 @@ static void quit() {
 }
 
 static void play() {
+#ifdef _WIN32
+    const char *argv[] = {"cmd.exe", "/c", A.play.c_str(), nullptr};
+#else
     const char *argv[] = {A.play.c_str(), nullptr};
+#endif
     SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetPointerProperty(props, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void *)argv);
     SDL_SetBooleanProperty(props, SDL_PROP_PROCESS_CREATE_BACKGROUND_BOOLEAN, true);
@@ -672,7 +705,7 @@ static void view_form(float w, float s) {
 
     bool ready = A.info_ready && have_game && have_dest;
     if (A.installed) {
-        if (button("Play", w * 0.56f, s, true, true)) A.play = A.dest + "/dekoonut", play();
+        if (button("Play", w * 0.56f, s, true, true)) A.play = A.dest + LAUNCHER, play();
         ImGui::SameLine(0, 14 * s);
         ImGui::BeginDisabled(!ready);
         if (button("Build again", w * 0.44f - 14 * s, s, false, true)) start_build();
@@ -734,7 +767,7 @@ static void view_build(float w, float s, float t) {
     if (!A.card_opened) ImGui::SetKeyboardFocusHere(-1);
     ImGui::SameLine(0, 14 * s);
     ImGui::BeginDisabled(A.cancelling);
-    if (button("Cancel", bw, s)) A.cancelling = true, g_build.cancel();
+    if (button("Cancel", bw, s)) cancel_build();
     ImGui::EndDisabled();
     gap(2 * s);
     wrapped(F_SMALL, DIM, "This only needs to be done once. A stopped build goes on from its last finished step.", w);
@@ -787,7 +820,7 @@ static void view_done(float w, float s) {
     ImGui::TextColored(TEXT, "Ready to play");
     ImGui::PopFont();
     wrapped(F_BODY, DIM, (A.ended - A.started < 3000 ? std::string("Everything was up to date. ") : "Built in " + duration(A.ended - A.started) + ". ") +
-                             "DekooNut is in your applications menu, with the icon from your game.", w);
+                             "DekooNut is in your " MENU ", with the icon from your game.", w);
     for (auto &warn : A.warnings) wrapped(F_SMALL, ImVec4(0.95f, 0.72f, 0.42f, 1), warn, w);
     gap(26 * s);
     if (button("Play", w, s, true, true)) play();
@@ -856,7 +889,11 @@ static void load_fonts(float s) {
     F_HEAD = add(roboto, 34);
     F_BODY = add(roboto, 23);
     F_SMALL = add(roboto, 19);
+#ifdef _WIN32
+    const char *mono = "C:\\Windows\\Fonts\\consola.ttf";
+#else
     const char *mono = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf";
+#endif
     SDL_PathInfo info;
     F_MONO = add(SDL_GetPathInfo(mono, &info) ? mono : roboto, 18);
     io.Fonts->Build();
@@ -992,9 +1029,10 @@ int main(int argc, char **argv) {
         SDL_RenderPresent(g_ren);
     }
     if (g_build.p) {   // closing the window stops the build; the next start goes on from the last finished step
-        g_build.cancel();
+        cancel_build();
         int code;
-        for (int i = 0; i < 100 && !SDL_WaitProcess(g_build.p, false, &code); i++) SDL_Delay(50);
+        for (int i = 0; i < 300 && !SDL_WaitProcess(g_build.p, false, &code); i++) SDL_Delay(50);
+        if (!SDL_WaitProcess(g_build.p, false, &code)) g_build.cancel();
     }
     ImGui_ImplSDLRenderer3_Shutdown();
     ImGui_ImplSDL3_Shutdown();

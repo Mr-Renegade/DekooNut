@@ -1070,6 +1070,8 @@ of the frame (period minus its work), as on the Switch.
   target right after DLSS's image was box-filtered into it) is what the game drew over the scene, and it is added to the 4K
   scene.
 - Anything unexpected leaves the stand-in upscaler, with the reason logged when it changes.
+- The `dlss` setting picks the model: `on` is preset M, `fast` preset K (2.1 instead of 4.5 ms a frame for 2560x1440 on an
+  RTX 3070), `off` leaves the stand-in.
 
 ### DLSS bias mask
 

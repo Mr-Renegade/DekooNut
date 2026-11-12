@@ -41,6 +41,13 @@
 # 3D render scale: the scene's size relative to the game resolution, game (5/6, the game's own 1600x900 at 1080p) or
 # a percentage (25 to 400, at most 4096 pixels a side); above 100 supersamples the scene (anti-aliasing). Read at start.
 # render_scale = game
+# Size of the game's own frame (picture and HUD): 0 = 2560x1440, 1 = 2048x1152, 2 = 1706x960, the default. 0 needs a
+# game-data pack with a larger texture heap (romfs_mods below; the set-up builds it). Read at start.
+# gfx_scale = 2
+# DLSS (NVIDIA cards with the model library in the dlss folder): on, the default, is the model the game is played
+# with on a fast card; fast is a lighter model at about half the GPU time (2.1 instead of 4.5 ms a frame for
+# 2560x1440 on an RTX 3070); off leaves the game's own upscale to a plain filter. Read at start.
+# dlss = on
 # Scaling to the window when it is larger than the game resolution: fsr (AMD FSR 1) or bilinear, and FSR's sharpening
 # from 0 (off) to 100. Changes while the game runs take effect at once.
 # upscaler = fsr
@@ -113,7 +120,8 @@
 # bind_Y = pad:north, key:mouse_l
 
 [files]
-# Folder with RomFS mod files that replace or add game files. Default: none.
+# Folder with RomFS mod files that replace or add game files: a game-data pack. A relative path starts at the folder
+# of oot.exe. Default: none.
 # romfs_mods =
 
 [diagnostics]

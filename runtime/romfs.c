@@ -345,7 +345,13 @@ static void overlay_init(void) {
         def[strlen(def) - strlen("/manifest.tsv")] = 0;
         patches = def;
     }
-    const char *dirs[2] = {patches, cfg_get("OOT_ROMFS_MODS")};
+    // OOT_ROMFS_MODS: a relative path is relative to the folder of oot.exe, like the other paths.
+    const char *mods = cfg_get("OOT_ROMFS_MODS");
+    char rel[2100];
+    if (mods && *mods && strcmp(mods, "0") && mods[0] != '/' && mods[0] != '\\' && mods[1] != ':' &&
+        snprintf(rel, sizeof rel, "%s/%s", index_dir, mods) < (int)sizeof rel)
+        mods = rel;
+    const char *dirs[2] = {patches, mods};
     for (int i = 0; i < 2; i++)
         if (dirs[i] && *dirs[i] && strcmp(dirs[i], "0")) overlay_load(dirs[i], 0);
     heapdef_overlay();

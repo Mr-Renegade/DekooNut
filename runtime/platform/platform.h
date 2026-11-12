@@ -389,3 +389,8 @@ PlatChild *plat_child_start(const char *exe, const char *arg, uint32_t *err);
 void plat_child_stop(PlatChild *c);                       // kills the child and frees c
 int plat_child_write(PlatChild *c, const void *data, size_t n);   // 1 when all n bytes were written
 long plat_child_read(PlatChild *c, void *buf, size_t cap);        // bytes read (at least 1); 0 or negative: pipe broke
+// ---- background tools: a program run with arguments, no console window, nothing piped.
+// args: the arguments after the program, ended by NULL. 0 on failure.
+intptr_t plat_tool_start(const char *exe, const char *const *args);
+// 0 while the tool runs. 1 once it has ended (*code: its exit code, -1 if unknown); the tool is then gone.
+int plat_tool_poll(intptr_t tool, int *code);

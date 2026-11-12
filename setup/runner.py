@@ -8,6 +8,7 @@ reads from. A step is skipped when oot-install.json records it with the same key
 import datetime
 import hashlib
 import json
+import threading
 import traceback
 
 from . import state as statefile
@@ -52,6 +53,7 @@ class Context:
         self.keys, self.steps = {}, []
         self.step = None            # the id of the running step, for progress events
         self.child = None           # the running tool, for a cancel
+        self.cancelled = False      # set by cli.py's watcher when the window asked for a stop through a file
 
     def record(self, step_id):
         return self.state['steps'].get(step_id)
@@ -61,6 +63,8 @@ class Context:
         statefile.save(self.dest, self.state)
 
     def progress(self, text, done=None, total=None, force=False):
+        if self.cancelled and threading.current_thread() is threading.main_thread():
+            raise KeyboardInterrupt
         self.reporter.progress(self.step, text, done, total, force)
 
 

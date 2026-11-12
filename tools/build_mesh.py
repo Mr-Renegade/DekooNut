@@ -65,7 +65,8 @@ def boost():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--toolchain", type=Path, help="setup directory containing llvm/bin and bin/ninja")
+    parser.add_argument("--toolchain", type=Path,
+                        help="Windows: the folder tools/win_deps.py fills (llvm-mingw/bin or llvm/bin, and bin/ninja)")
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--out", type=Path, default=ROOT / "build/mesh", help="build directory (default build/mesh)")
     args = parser.parse_args()
@@ -74,14 +75,18 @@ def main():
     for name, (url, commit) in SOURCES.items():
         source(name, url, commit)
     boost_headers = boost()
-    clang = args.toolchain / "llvm/bin/clang++.exe" if args.toolchain else shutil.which("clang++")
+    llvm = args.toolchain / "llvm-mingw" if args.toolchain and (args.toolchain / "llvm-mingw").is_dir() else \
+        args.toolchain / "llvm" if args.toolchain else None
+    clang = llvm / "bin/clang++.exe" if llvm else shutil.which("clang++")
     ninja = args.toolchain / "bin/ninja.exe" if args.toolchain else shutil.which("ninja")
     if not clang or not ninja:
         parser.error("provide --toolchain or put clang++ and ninja on PATH")
     out = args.out.resolve()
     run("cmake", "-S", ROOT / "tools/mesh", "-B", out, "-G", "Ninja",
         "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_CXX_COMPILER={clang}", f"-DCMAKE_MAKE_PROGRAM={ninja}",
-        f"-DBOOST_HEADERS={boost_headers}", f"-DSPIRV_HEADERS={ROOT / 'refs/mesh-spirv/include'}")
+        f"-DBOOST_HEADERS={boost_headers}", f"-DSPIRV_HEADERS={ROOT / 'refs/mesh-spirv/include'}",
+        # Windows: the C++ runtime inside the program, so no library has to sit beside it.
+        *(["-DCMAKE_EXE_LINKER_FLAGS=-static"] if args.toolchain else []))
     run("cmake", "--build", out, "-j", args.jobs)
 
 

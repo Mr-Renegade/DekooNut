@@ -4,12 +4,6 @@
 // Indirect pointer resolution follows Lichii buffer_cache.h::BindGraphicsStorageBuffer; pointers are read from
 // ordered GPU-visible memory before rendering begins, not from possibly stale guest bytes.
 #pragma once
-#ifndef _WIN32
-#include <spawn.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#endif
 
 #define MESH_BINDINGS 64
 #define MESH_C0_BYTES 0x900
@@ -29,7 +23,7 @@ typedef struct MeshModule {
     uint32_t stage, regs[3], count, words;
     uint32_t array_slots;   // texture slots compiled as 2D arrays: bit per slot, 0 for the plain module (see mesh_module_fit)
     uint32_t *code;
-    int compile_pid;   // a background oot_mesh_xlate is at work on it (Linux)
+    intptr_t compile_tool;   // a background oot_mesh_xlate is at work on it (plat_tool_start)
     int gave_up;       // its compiler failed, or it has no compiler: its draws stay skipped
     MeshResource resources[MESH_BINDINGS];
 } MeshModule;
@@ -144,23 +138,14 @@ static const char *mesh_cache_dir(void) {
     static int ready;
     if (ready) return directory[0] ? directory : NULL;
     ready = 1;
-#ifndef _WIN32
-    {
-        char self[PLAT_PATH_MAX];
-        ssize_t n = readlink("/proc/self/exe", self, sizeof self - 1);
-        if (n > 0) {
-            self[n] = 0;
-            char *slash = strrchr(self, '/');
-            if (slash) {
-                struct stat st;
-                *slash = 0;
-                snprintf(directory, sizeof directory, "%s/mesh-cache", self);
-                if (!stat(directory, &st) && S_ISDIR(st.st_mode)) snprintf(mesh_exe_dir, sizeof mesh_exe_dir, "%s", self);
-                else snprintf(directory, sizeof directory, "%s/../mesh-cache", self);
-            }
-        }
+    char self[PLAT_PATH_MAX];
+    char *slash = plat_exe_path(self, sizeof self) ? plat_last_sep(self) : NULL;
+    if (slash) {
+        *slash = 0;
+        snprintf(directory, sizeof directory, "%s/mesh-cache", self);
+        if (plat_dir_exists(directory)) snprintf(mesh_exe_dir, sizeof mesh_exe_dir, "%s", self);
+        else snprintf(directory, sizeof directory, "%s/../mesh-cache", self);
     }
-#endif
     if (directory[0]) rt_log("mesh: cache %s%s", directory, mesh_exe_dir[0] ? " (own cache, oot_mesh_xlate beside the executable)" : "");
     return directory[0] ? directory : NULL;
 }
@@ -177,11 +162,19 @@ static void mesh_module_path(char *path, size_t size, const char *directory, con
 // good if the compiler refuses it.
 static int mesh_compiles;
 static void mesh_compile_start(MeshModule *m, const char *directory, const uint8_t *control, const uint8_t *code) {
-#ifndef _WIN32
+#ifdef _WIN32
+    const char *exe = ".exe";
+#else
+    const char *exe = "";
+#endif
     if (mesh_compiles >= 4) return;
     char source[PLAT_PATH_MAX * 2], ctl[PLAT_PATH_MAX * 2], bin[PLAT_PATH_MAX * 2], out[PLAT_PATH_MAX * 2], tool[PLAT_PATH_MAX * 2];
     char context[PLAT_PATH_MAX * 2 + 32];
     snprintf(source, sizeof source, "%s/src", directory);
+    // A lowered stage: the compiler reads the NVN 2 stage it came from, whose dump name is this module's key.
+    const uint8_t *raw_control, *raw_code;
+    if (!gfx_shader_is_nvn2(control) && nvn2_origin_source(code, &raw_control, &raw_code))
+        control = raw_control, code = raw_code;
     gfx_shader_nvn2_dump_to(source, control, code);
     snprintf(ctl, sizeof ctl, "%s/%016llx.ctl", source, (unsigned long long)m->key);
     snprintf(bin, sizeof bin, "%s/%016llx.bin", source, (unsigned long long)m->key);
@@ -195,38 +188,27 @@ static void mesh_compile_start(MeshModule *m, const char *directory, const uint8
             if (m->array_slots >> slot & 1) fprintf(f, "T %d %#x %d\n", slot, 0x1000 + slot, GFX_TEX_2D_ARRAY);
         fclose(f);
     }
-    if (mesh_exe_dir[0]) snprintf(tool, sizeof tool, "%s/oot_mesh_xlate", mesh_exe_dir);
-    else snprintf(tool, sizeof tool, "%s/../mesh/oot_mesh_xlate", directory);
-    if (access(tool, X_OK)) { m->gave_up = 1; return; }
-    char *const argv[] = {tool, "compile-ctl", bin, ctl, out, m->array_slots ? context : NULL, NULL};
-    pid_t pid;
-    extern char **environ;
-    if (posix_spawn(&pid, tool, NULL, NULL, argv, environ)) { m->gave_up = 1; return; }
-    m->compile_pid = (int)pid;
+    if (mesh_exe_dir[0]) snprintf(tool, sizeof tool, "%s/oot_mesh_xlate%s", mesh_exe_dir, exe);
+    else snprintf(tool, sizeof tool, "%s/../mesh/oot_mesh_xlate%s", directory, exe);
+    if (!plat_file_exists(tool)) { m->gave_up = 1; return; }
+    const char *const args[] = {"compile-ctl", bin, ctl, out, m->array_slots ? context : NULL, NULL};
+    m->compile_tool = plat_tool_start(tool, args);
+    if (!m->compile_tool) { m->gave_up = 1; return; }
     mesh_compiles++;
     rt_log("mesh: compiling %016llx in the background (2D array slots %#x)", (unsigned long long)m->key, m->array_slots);
-#else
-    (void)directory, (void)control, (void)code;
-    m->gave_up = 1;
-#endif
 }
 
 // 1: no compile is running for m (any more), so the cache can be read again.
 static int mesh_compile_poll(MeshModule *m) {
-#ifndef _WIN32
-    if (!m->compile_pid) return 1;
-    int status = 0;
-    pid_t done = waitpid(m->compile_pid, &status, WNOHANG);
-    if (done == 0) return 0;
-    m->compile_pid = 0;
+    if (!m->compile_tool) return 1;
+    int code = 0;
+    if (!plat_tool_poll(m->compile_tool, &code)) return 0;
+    m->compile_tool = 0;
     mesh_compiles--;
-    if (done < 0 || !WIFEXITED(status) || WEXITSTATUS(status)) {
+    if (code) {
         m->gave_up = 1;
         rt_log("mesh: %016llx does not compile: its draws stay skipped", (unsigned long long)m->key);
     }
-#else
-    (void)m;
-#endif
     return 1;
 }
 
@@ -406,7 +388,7 @@ static MeshModule *mesh_module_get(uint64_t key, uint64_t native, unsigned stage
     mesh_module_path(path, sizeof path, directory, m, ".bindings");
     FILE *f = fopen(path, "r");
     if (!f) {
-        if (!m->compile_pid && !m->gave_up) mesh_compile_start(m, directory, control, source);
+        if (!m->compile_tool && !m->gave_up) mesh_compile_start(m, directory, control, source);
         return NULL;
     }
     char magic[8]; unsigned declared, count; unsigned long long identity;

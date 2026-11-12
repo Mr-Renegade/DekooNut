@@ -7,6 +7,8 @@
     Python 3.14     .venv-py314         only when the system's python3 is older
     .NET 10 SDK     toolchain/dotnet    builds the shader translator; skipped when `dotnet` already has an SDK 10
     DLSS SDK        toolchain/dlss      NVIDIA's SDK at a pinned tag: headers, the loader library, the model library
+                                        (Linux; a Windows build has no DLSS yet)
+    Windows only    toolchain/llvm-mingw, deps-mingw, bin: the compiler and the libraries (tools/win_deps.py)
 
 Each is skipped when it is there. Nothing is installed outside this checkout.
 """
@@ -15,13 +17,15 @@ import subprocess
 import sys
 import tarfile
 import urllib.request
+import zipfile
 from pathlib import Path
 
 from . import ROOT, host
 from .runner import SetupError
 
-UV_URL = 'https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz'
-DOTNET_SCRIPT = 'https://dot.net/v1/dotnet-install.sh'
+UV_URL = 'https://github.com/astral-sh/uv/releases/latest/download/' + (
+    'uv-x86_64-pc-windows-msvc.zip' if host.WIN else 'uv-x86_64-unknown-linux-gnu.tar.gz')
+DOTNET_SCRIPT = 'https://dot.net/v1/dotnet-install.' + ('ps1' if host.WIN else 'sh')
 DOTNET_CHANNEL = '10.0'
 DLSS_URL = 'https://github.com/NVIDIA/DLSS.git'
 DLSS_TAG = 'v310.9.16'
@@ -51,23 +55,30 @@ def uv(ctx):
     if found:
         return found
     folder = ROOT / 'toolchain' / 'uv'
-    archive = folder / 'uv.tar.gz'
+    archive = folder / UV_URL.rsplit('/', 1)[1]
     download(ctx, UV_URL, archive, 'uv')
-    with tarfile.open(archive) as tar:
-        for member in tar:
-            if member.isfile() and Path(member.name).name in ('uv', 'uvx'):
-                member.name = Path(member.name).name
-                tar.extract(member, folder, filter='data')
+    if host.WIN:
+        with zipfile.ZipFile(archive) as z:
+            for name in z.namelist():
+                if Path(name).name in ('uv.exe', 'uvx.exe'):
+                    (folder / Path(name).name).write_bytes(z.read(name))
+    else:
+        with tarfile.open(archive) as tar:
+            for member in tar:
+                if member.isfile() and Path(member.name).name in ('uv', 'uvx'):
+                    member.name = Path(member.name).name
+                    tar.extract(member, folder, filter='data')
     archive.unlink()
-    if not (folder / 'uv').is_file():
+    if not (folder / ('uv' + host.EXE)).is_file():
         raise SetupError('The uv archive did not hold the uv program.', UV_URL)
-    return str(folder / 'uv')
+    return str(folder / ('uv' + host.EXE))
 
 
 def venv312(ctx, run):
     """.venv with the generator's packages; ninja and cmake too when the system has none."""
     need = ['-r', str(ROOT / 'tools' / 'requirements.txt')]
-    extra = [name for name in ('ninja', 'cmake') if not shutil.which(name)]
+    extra = [name for name in ('ninja', 'cmake') if not shutil.which(name) and not
+             (ROOT / 'toolchain' / 'bin' / (name + host.EXE)).is_file()]
     marker = ROOT / '.venv' / '.setup-packages'
     want = (ROOT / 'tools' / 'requirements.txt').read_text() + ' '.join(extra)
     if host.python312() and marker.is_file() and marker.read_text() == want:
@@ -102,10 +113,14 @@ def dotnet(ctx, run):
     if has_dotnet():
         return
     folder = ROOT / 'toolchain' / 'dotnet'
-    script = ROOT / 'toolchain' / 'dotnet-install.sh'
+    script = ROOT / 'toolchain' / DOTNET_SCRIPT.rsplit('/', 1)[1]
     download(ctx, DOTNET_SCRIPT, script, 'the .NET install script')
     ctx.progress('Downloading the .NET SDK (about 220 MB)', force=True)
-    run(ctx, ['bash', str(script), '--channel', DOTNET_CHANNEL, '--install-dir', str(folder), '--no-path'])
+    if host.WIN:
+        run(ctx, ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(script), '-Channel',
+                  DOTNET_CHANNEL, '-InstallDir', str(folder), '-NoPath'])
+    else:
+        run(ctx, ['bash', str(script), '--channel', DOTNET_CHANNEL, '--install-dir', str(folder), '--no-path'])
     if not has_dotnet():
         raise SetupError('The .NET SDK could not be set up.', 'The log has the details.')
 
@@ -137,9 +152,26 @@ def dlss(ctx, run):
         raise SetupError('The NVIDIA DLSS SDK is incomplete after the download.', str(DLSS_DIR))
 
 
+def win_ready():
+    tc = ROOT / 'toolchain'
+    return ((tc / 'llvm-mingw' / 'bin' / 'clang.exe').is_file() and (tc / 'bin' / 'ninja.exe').is_file() and
+            (tc / 'deps-mingw' / 'include' / 'SDL3' / 'SDL.h').is_file())
+
+
+def win_tools(ctx, run):
+    """The compiler and the libraries of a Windows build: pinned downloads, unpacked into toolchain/."""
+    if win_ready():
+        return
+    ctx.progress('Downloading the compiler and the libraries', force=True)
+    run(ctx, [host.python314(), str(ROOT / 'tools' / 'win_deps.py')])
+    if not win_ready():
+        raise SetupError('The Windows build tools are incomplete after the download.', str(ROOT / 'toolchain'))
+
+
 def all_ready():
     extra_ok = all(host.which(name) for name in ('ninja', 'cmake'))
-    return bool(host.python312() and host.python314() and has_dotnet() and dlss_ready() and extra_ok)
+    system = win_ready() if host.WIN else dlss_ready()
+    return bool(host.python312() and host.python314() and has_dotnet() and system and extra_ok)
 
 
 if __name__ == '__main__':

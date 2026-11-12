@@ -1624,6 +1624,23 @@ PlatChild *plat_child_start(const char *exe, const char *arg, uint32_t *err) {
     return c;
 }
 
+intptr_t plat_tool_start(const char *exe, const char *const *args) {
+    const char *argv[16] = {exe};
+    int n = 1;
+    for (; args && args[n - 1] && n < 15; n++) argv[n] = args[n - 1];
+    argv[n] = NULL;
+    pid_t pid;
+    return posix_spawn(&pid, exe, NULL, NULL, (char *const *)argv, environ) ? 0 : (intptr_t)pid;
+}
+
+int plat_tool_poll(intptr_t tool, int *code) {
+    int status = 0;
+    pid_t done = waitpid((pid_t)tool, &status, WNOHANG);
+    if (done == 0) return 0;
+    *code = done > 0 && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    return 1;
+}
+
 void plat_child_stop(PlatChild *c) {
     if (!c) return;
     close(c->in);

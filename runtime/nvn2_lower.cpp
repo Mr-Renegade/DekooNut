@@ -16,6 +16,7 @@
 
 extern "C" void rt_log(const char *fmt, ...);
 extern "C" uint64_t gfx_shader_nvn2_hash(const uint8_t *control, const uint8_t *code);
+extern "C" int gfx_shader_nvn2_sizes(const uint8_t *control, uint32_t *ctl_size, uint32_t *len);
 
 namespace {
 constexpr size_t kControl = 0x880;   // gfx_shader.c CONTROL_SIZE
@@ -23,7 +24,11 @@ constexpr size_t kC0Layout = 0x860;  // "DKC1" + compute parameter layout (gfx_s
 constexpr uint64_t kMaxwellNop = 0x50b0000000070f00ull;
 constexpr uint64_t kMaxwellExit = 0xe30000000007000full;
 
-struct Lowered { std::vector<uint8_t> control; std::vector<uint64_t> code; uint64_t origin, native_key; int kind, prim_vertices; bool tensor = false; };
+struct Lowered {
+    std::vector<uint8_t> control; std::vector<uint64_t> code; uint64_t origin, native_key; int kind, prim_vertices;
+    bool tensor = false;
+    std::vector<uint8_t> raw_control, raw_code;   // task and mesh stages: the NVN 2 stage itself, for the mesh compiler
+};
 std::mutex lock;
 // Held across lower() alone (lowerings run one at a time); lock covers the tables only, so the replay's per-draw
 // questions do not wait for a lowering.
@@ -186,6 +191,9 @@ extern "C" int nvn2_lower(const uint8_t *control, const uint8_t *code, const uin
         cache.emplace(key, l);
         if (!l) return;
         l->origin = key;
+        uint32_t ctl_size, len;
+        if ((control[0x56] == 6 || control[0x56] == 7) && gfx_shader_nvn2_sizes(control, &ctl_size, &len))
+            l->raw_control.assign(control, control + ctl_size), l->raw_code.assign(code, code + len);
         origins.emplace(reinterpret_cast<const uint8_t *>(l->code.data()), key);
         origins_gen.fetch_add(1, std::memory_order_release);
         if (l->tensor) tensor_stages.insert(reinterpret_cast<const uint8_t *>(l->code.data()));
@@ -235,6 +243,16 @@ extern "C" uint64_t nvn2_origin(const uint8_t *code) {
     }
     m.code = code, m.origin = o, m.gen = gen;
     return o;
+}
+
+extern "C" int nvn2_origin_source(const uint8_t *code, const uint8_t **control, const uint8_t **raw) {
+    std::lock_guard<std::mutex> g(lock);
+    const auto it = origins.find(code);
+    if (it == origins.end()) return 0;
+    const Lowered *l = cache.at(it->second);
+    if (l->raw_code.empty()) return 0;
+    *control = l->raw_control.data(), *raw = l->raw_code.data();
+    return 1;
 }
 
 extern "C" int nvn2_native_kind(const uint8_t *control, const uint8_t *code) {

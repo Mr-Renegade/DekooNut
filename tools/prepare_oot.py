@@ -31,12 +31,12 @@ more memory than a game machine has on them; runtime skips those dispatches too)
 Game-derived output stays in the build directory. Needs Python 3.14 (compression.zstd), standard library only.
 """
 import argparse
-import fcntl
 import json
 import os
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -45,7 +45,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 import shader_census  # noqa: E402
 
-LOCK = '/tmp/oot-game.lock'                                # one game or GPU job at a time across worktrees
+WIN = os.name == 'nt'
+EXE = 'oot.exe' if WIN else 'oot'
+if not WIN:
+    import fcntl
+# one game or GPU job at a time across worktrees (Linux; Windows takes no lock)
+LOCK = str(Path(tempfile.gettempdir()) / 'oot-game.lock') if WIN else '/tmp/oot-game.lock'
 VS, FS, CS = 0, 4, 5
 PRG_HEAD = 12 + 32 + 0x880
 ANS_PACKED, ANS_REC = 148, 4 + 32 + 32 + 148 + 1          # gfx_shader.c ANS_REC, version 2
@@ -89,7 +94,7 @@ def run_env(xlate):
 
 def lower(build, shards, xlate):
     src, prg, idx = build / 'seed-nvn2.bin', build / 'seed-programs.bin', build / 'seed-lowered.bin'
-    exe = build / 'oot'
+    exe = build / EXE
     if idx.is_file() and prg.is_file() and idx.stat().st_mtime >= max(src.stat().st_mtime, exe.stat().st_mtime):
         log('lower: seed-programs.bin is current')
         return
@@ -307,6 +312,9 @@ def reflection_of(build):
 
 
 def game_running():
+    if WIN:
+        out = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq oot.exe', '/NH'], capture_output=True, text=True).stdout
+        return 'oot.exe' in out.lower()
     return subprocess.run(['pgrep', '-x', 'oot'], capture_output=True).returncode == 0
 
 
@@ -315,8 +323,9 @@ def oot_prepare(build, threads, xlate, what, slice_s=None, lock=True):
     slice at most; again if the process dies, the journal going on after the module that killed it. Translating is CPU
     work in a separate process and takes no lock."""
     env = run_env(xlate)
-    env.setdefault('WAYLAND_DISPLAY', 'wayland-0')
-    env.setdefault('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')
+    if not WIN:
+        env.setdefault('WAYLAND_DISPLAY', 'wayland-0')
+        env.setdefault('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')
     env.update(what)
     env.setdefault('OOT_PREPARE_BIG_BUILDS', '6')
     if slice_s:
@@ -324,18 +333,19 @@ def oot_prepare(build, threads, xlate, what, slice_s=None, lock=True):
     deaths = 0
     while True:
         with open(LOCK, 'w') as held:
-            if lock:
+            if lock and not WIN:
                 fcntl.flock(held, fcntl.LOCK_EX)
+            if lock:
                 while game_running():                   # a player's game has no lock: wait for it
                     time.sleep(10)
             n = threads or (6 if game_running() else 10)   # the PC is shared
             env.update(OOT_PREPARE_THREADS=str(n), OOT_PREWARM_XLATE=str(max(1, n // 2)))
             t0 = time.monotonic()
             with open(build / 'prepare.log', 'ab') as out:
-                r = subprocess.run([str(build / 'oot'), '--prepare-shaders'], cwd=build, stdout=out,
+                r = subprocess.run([str(build / EXE), '--prepare-shaders'], cwd=build, stdout=out,
                                    stderr=subprocess.STDOUT, env=env)
-        tail = subprocess.run(['grep', '-a', '^prepare-shaders:', str(build / 'prepare.log')], capture_output=True,
-                              text=True).stdout.splitlines()[-3:]
+        with open(build / 'prepare.log', 'rb') as f:
+            tail = [l.decode('utf-8', 'replace').rstrip() for l in f if l.startswith(b'prepare-shaders:')][-3:]
         log(f'oot --prepare-shaders: rc={r.returncode}, {time.monotonic() - t0:.0f} s; ' + ' | '.join(tail[-2:]))
         if r.returncode:
             deaths += 1

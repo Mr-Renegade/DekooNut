@@ -835,13 +835,13 @@ static void ov_font_size(Cpu *c) {
 // ==== registration
 // ---- Switch 2 oe calls
 // int nn::oe::GetCurrentGraphicsScale(): 0-2. The game's frame is its display size (2560x1440) times 1, 0.8 or 0.667;
-// 2 gives the 1706x960 crop the HUD is drawn in. OOT_GFX_SCALE=<0-2> (default 2).
+// 2 gives the 1706x960 crop the HUD is drawn in. The gfx_scale setting (0-2, default 2).
 static void ov_graphics_scale(Cpu *c) {
     static int v = -1;
     if (v < 0) {
-        const char *e = getenv("OOT_GFX_SCALE");
-        v = e && *e >= '0' && *e <= '2' && !e[1] ? *e - '0' : 2;
-        rt_log("oe: GetCurrentGraphicsScale -> %d (x%s; OOT_GFX_SCALE)", v, v == 0 ? "1" : v == 1 ? "0.8" : "0.667");
+        const char *e = cfg_value("OOT_GFX_SCALE");
+        v = *e >= '0' && *e <= '2' && !e[1] ? *e - '0' : 2;
+        rt_log("oe: GetCurrentGraphicsScale -> %d (x%s; gfx_scale)", v, v == 0 ? "1" : v == 1 ? "0.8" : "0.667");
     }
     ret_x(c, (uint64_t)v);
 }

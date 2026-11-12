@@ -93,7 +93,16 @@ def main():
         launcher = (dest / 'dekoonut').read_text()
         level = quality.level(None)
         check('the launcher starts oot from its own folder', 'exec ./oot "$@"' in launcher and 'cd "$here"' in launcher, True)
-        check('the launcher names the level\'s pack', f'gamedata/{level["pack"]}' in launcher, True)
+        ini = (dest / 'oot.ini').read_text()
+        check('the level\'s pack is named once: in oot.ini when the level says so, else by the launcher',
+              (f'gamedata/{level["pack"]}' in launcher, steps.ini_get(ini, 'romfs_mods')),
+              (False, level['ini']['romfs_mods']) if 'romfs_mods' in level.get('ini', {}) else (True, None))
+        for key, value in level.get('ini', {}).items():
+            check(f'oot.ini has the level\'s {key}', steps.ini_get(ini, key), value)
+        (dest / 'oot.ini').write_text(steps.ini_set(ini, 'gfx_scale', '1'))
+        steps.Finish().run(ctx)
+        if 'gfx_scale' in level.get('ini', {}):
+            check('a setting the player changed is left alone', steps.ini_get((dest / 'oot.ini').read_text(), 'gfx_scale'), '1')
         check('the launcher shows no overlay', 'MANGOHUD' in launcher or 'PERF_OVERLAY' in launcher, False)
         entry = steps.MENU_ENTRY.read_text()
         check('the menu entry starts the launcher with the install\'s icon',

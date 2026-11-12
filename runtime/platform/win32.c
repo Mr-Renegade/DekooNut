@@ -1426,6 +1426,36 @@ PlatChild *plat_child_start(const char *exe, const char *arg, uint32_t *err) {
     return c;
 }
 
+// Each argument goes in double quotes; the tools take paths and plain words, so no quote needs escaping.
+intptr_t plat_tool_start(const char *exe, const char *const *args) {
+    static wchar_t cmd[WPATH * 8];
+    wchar_t w[WPATH];
+    static SRWLOCK lock = SRWLOCK_INIT;
+    AcquireSRWLockExclusive(&lock);
+    int n = 0, ok = widen(exe, w, WPATH) != 0;
+    if (ok) n = swprintf(cmd, WPATH * 8, L"\"%ls\"", w);
+    for (int i = 0; ok && args && args[i]; i++) {
+        ok = widen(args[i], w, WPATH) && n + (int)wcslen(w) + 4 < WPATH * 8;
+        if (ok) n += swprintf(cmd + n, WPATH * 8 - n, L" \"%ls\"", w);
+    }
+    STARTUPINFOW si = {.cb = sizeof si};
+    PROCESS_INFORMATION pi;
+    ok = ok && CreateProcessW(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+    ReleaseSRWLockExclusive(&lock);
+    if (!ok) return 0;
+    CloseHandle(pi.hThread);
+    return (intptr_t)pi.hProcess;
+}
+
+int plat_tool_poll(intptr_t tool, int *code) {
+    HANDLE h = (HANDLE)tool;
+    if (WaitForSingleObject(h, 0) == WAIT_TIMEOUT) return 0;
+    DWORD e = 0;
+    *code = GetExitCodeProcess(h, &e) ? (int)e : -1;
+    CloseHandle(h);
+    return 1;
+}
+
 void plat_child_stop(PlatChild *c) {
     if (!c) return;
     CloseHandle(c->in);

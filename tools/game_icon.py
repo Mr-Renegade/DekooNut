@@ -113,6 +113,32 @@ def png(w, h, rgba):
             + chunk(b'IDAT', zlib.compress(raw, 9)) + chunk(b'IEND', b''))
 
 
+def shrink(w, h, rgba, size):
+    """The picture as size x size RGBA, each pixel the mean of the source area it covers (alpha-weighted colour)."""
+    out = bytearray(size * size * 4)
+    for y in range(size):
+        y0, y1 = y * h // size, max((y + 1) * h // size, y * h // size + 1)
+        for x in range(size):
+            x0, x1 = x * w // size, max((x + 1) * w // size, x * w // size + 1)
+            r = g = b = a = 0
+            for yy in range(y0, y1):
+                row = rgba[(yy * w + x0) * 4:(yy * w + x1) * 4]
+                for i in range(0, len(row), 4):
+                    al = row[i + 3]
+                    r += row[i] * al; g += row[i + 1] * al; b += row[i + 2] * al; a += al
+            n = (y1 - y0) * (x1 - x0)
+            o = (y * size + x) * 4
+            if a:
+                out[o:o + 4] = bytes((r // a, g // a, b // a, a // n))
+    return bytes(out)
+
+
+def ico(w, h, rgba, size=256):
+    """A Windows icon file holding the picture as one PNG."""
+    body = png(size, size, shrink(w, h, rgba, size))
+    return struct.pack('<HHH', 0, 1, 1) + struct.pack('<BBBBHHII', 0, 0, 0, 0, 1, 32, len(body), 22) + body
+
+
 def helper():
     """build/setup/icon/oot_icon, rebuilt when a source, a header or this file is newer."""
     exe = BUILD / ('oot_icon.exe' if os.name == 'nt' else 'oot_icon')
@@ -160,6 +186,7 @@ def main(argv=None):
     src.add_argument('--nup', type=Path, help='the game\'s .nup container')
     ap.add_argument('--package', default='update', help='with --nup: update (default), base or an index')
     ap.add_argument('--out', type=Path, required=True, help='PNG to write')
+    ap.add_argument('--ico', type=Path, help='also write the picture as a 256x256 Windows icon')
     args = ap.parse_args(argv)
     try:
         try:
@@ -184,9 +211,12 @@ def main(argv=None):
             w, h, *rest = bntx_level0(bntx)
         except struct.error:
             raise IconError('the BNTX is truncated')
-        data = png(w, h, decode(w, h, *rest))
+        rgba = decode(w, h, *rest)
+        data = png(w, h, rgba)
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_bytes(data)
+        if args.ico:
+            args.ico.write_bytes(ico(w, h, rgba))
     except (IconError, en.NupError, OSError, KeyError, ValueError, struct.error) as e:
         print(f'game_icon: {e}', file=sys.stderr)
         return 1
