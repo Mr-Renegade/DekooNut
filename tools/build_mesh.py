@@ -67,6 +67,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--toolchain", type=Path, help="setup directory containing llvm/bin and bin/ninja")
     parser.add_argument("--jobs", type=int, default=8)
+    parser.add_argument("--out", type=Path, default=ROOT / "build/mesh", help="build directory (default build/mesh)")
     args = parser.parse_args()
     if args.jobs < 1:
         parser.error("--jobs must be positive")
@@ -77,10 +78,11 @@ def main():
     ninja = args.toolchain / "bin/ninja.exe" if args.toolchain else shutil.which("ninja")
     if not clang or not ninja:
         parser.error("provide --toolchain or put clang++ and ninja on PATH")
-    run("cmake", "-S", ROOT / "tools/mesh", "-B", ROOT / "build/mesh", "-G", "Ninja",
+    out = args.out.resolve()
+    run("cmake", "-S", ROOT / "tools/mesh", "-B", out, "-G", "Ninja",
         "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_CXX_COMPILER={clang}", f"-DCMAKE_MAKE_PROGRAM={ninja}",
         f"-DBOOST_HEADERS={boost_headers}", f"-DSPIRV_HEADERS={ROOT / 'refs/mesh-spirv/include'}")
-    run("cmake", "--build", ROOT / "build/mesh", "-j", args.jobs)
+    run("cmake", "--build", out, "-j", args.jobs)
 
 
 if __name__ == "__main__":

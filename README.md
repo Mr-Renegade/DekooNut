@@ -38,7 +38,17 @@ built or tested.
 
 ## Build and run
 
-    python3.14 tools/extract_nup.py <game>.nup --out build/extracted/oot111-dump
+    ./setup.sh
+
+opens the setup window: choose your game file and an install folder, press Build, then Play. It names the system
+packages to install first, fetches the other build tools into this checkout, builds the game into the install
+folder and adds DekooNut to the applications menu, with the icon taken from your game.
+`./setup.sh --game <game>.nup --dest <folder>` does the same from a terminal.
+
+By hand:
+
+    python3.14 tools/extract_nup.py <game>.nup --package base --overlay-update --out build/extracted/oot111-dump
+    python3 tools/build_zbic.py
     python3 tools/nso_plain.py build/extracted/oot111-dump/exefs build/extracted/oot111/exefs
     python3 tools/pack_romfs.py --dir build/extracted/oot111-dump/romfs --out build/romfs-oot111
     .venv/bin/python recomp/gen.py --exefs build/extracted/oot111/exefs --out generated/oot111 --patches recomp/patches-oot111.txt

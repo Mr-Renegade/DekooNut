@@ -38,6 +38,42 @@ The full steps from your own copy of the game to a running build. The short form
   rewrites the committed headers; `tools/build_game.py` refuses to build when one no longer matches its source).
 - A Linux desktop with systemd for `tools/prepare_oot.sh` (it runs under `systemd-run --user` with a memory cap).
 
+## Setup
+
+`./setup.sh` does everything below for an install folder of its own, in a window or from a terminal:
+
+    ./setup.sh                                          the window
+    ./setup.sh --game <game>.nup --dest <folder>        the same from a terminal (--game also takes a folder
+                                                        holding exefs/ and romfs/)
+    ./setup.sh --dest <folder>                          go on after a stop, or rebuild after `git pull`
+    ./setup.sh --check                                  only say what this PC lacks
+
+- It asks for the system packages it cannot get itself with one command (on Ubuntu: clang, lld, git and the
+  development files of Vulkan, SDL3, Opus, libvpx, dav1d, zstd and zlib). The rest it fetches into this checkout,
+  without root: uv and the two Python environments, ninja and cmake when the system has none, the .NET SDK
+  (`toolchain/dotnet`) and the NVIDIA DLSS SDK at a pinned tag from NVIDIA's repository (`toolchain/dlss`, under
+  NVIDIA's licence).
+- The install folder holds the game as it runs (`oot`, the translator, the mesh shader compiler and its `mesh-cache/`,
+  `exefs/`, `romfs/`, `dlss/`, the game-data pack of the chosen quality level, `oot.ini`, `profile/` with the saves,
+  the shader caches), the launcher
+  `dekoonut` and `dekoonut.png`: the game's own Deku Nut icon, read from your game data
+  (`tools/game_icon.py`). The applications menu gets an entry "DekooNut" (`--no-menu-entry` leaves it out). About
+  36 GB.
+- Steps are recorded in `oot-install.json`; a step whose inputs did not change is skipped, so a stopped setup goes
+  on where it was, and after an update of this repository only what changed is rebuilt (the generated C and the
+  objects stay in the folder's `.setup/`). Logs: `.setup/logs/`.
+- The window (`setup/gui/`, compiled on first start into `build/setup/gui/`) is a front end over
+  `./setup.sh --json ...`, which prints one JSON event per line (`setup/events.py`).
+- Quality levels: `setup/quality.py` (a game-data pack, the launcher's environment and `oot.ini` keys per level).
+  Setup suggests one from the graphics card's video memory and the PC's memory; `--quality` or the window choose
+  another.
+- On the PC it was written on (16 threads, RTX 4080 SUPER, NVMe) a first install takes about 19 minutes: 43 s for the
+  game data, 37 s to recompile, 4 minutes to compile the game, 13 minutes to prepare the shaders. A second run on
+  the same folder with nothing changed takes seconds.
+- Tests without game files: `python3 tests/setup_test.py` (the bookkeeping), and `tests/setup_fake.py`, a stand-in
+  backend that plays a build for the window (`build/setup/gui/dekoonut-setup --root . --backend "python3
+  tests/setup_fake.py"`).
+
 ## Build
 
 ### 1. Extract the dump
@@ -45,25 +81,30 @@ The full steps from your own copy of the game to a running build. The short form
 From a `.nup`:
 
     python3.14 tools/extract_nup.py <game>.nup --list
-    python3.14 tools/extract_nup.py <game>.nup --out build/extracted/oot111-dump
+    python3.14 tools/extract_nup.py <game>.nup --package base --overlay-update --out build/extracted/oot111-dump
 
-`--list` shows the packages in the container; pick the one that holds update 1.1.1 with `--package` (see `--help`).
+`--list` shows the packages in the container: `base` is the game as released, `update` is update 1.1.1. The build takes
+the base package with the update laid over it (`--overlay-update`): the update's five ExeFS files, and the base RomFS
+with the update's files replacing and adding to it (186,808 files).
 
 This writes `build/extracted/oot111-dump/exefs` and `.../romfs`, each file checked against the SHA-256 in the container.
 
 Convert the ExeFS to plain NSOs (the game's `main` is ZBIC-compressed):
 
+    python3 tools/build_zbic.py
     python3 tools/nso_plain.py build/extracted/oot111-dump/exefs build/extracted/oot111/exefs
 
 Every file is copied; ZBIC segments are decoded by `build/zbic/zbic_dec` and checked against the hashes in the NSO
-header. `zbic_dec` is `tools/zbic/zbic_dec.c` linked against a zstd built with `ZSTD_ZBIC_SUPPORT=1` (its header comment
-names the source and revision); the repository has no script that builds it.
+header. `tools/build_zbic.py` builds the decoder: `tools/zbic/zbic_dec.c` with a zstd that reads ZBIC frames, fetched
+at a pinned commit into `refs/zbic-zstd`.
 
 Pack the RomFS into one image:
 
     python3 tools/pack_romfs.py --dir build/extracted/oot111-dump/romfs --out build/romfs-oot111
 
 This writes `build/romfs-oot111/romfs.bin` and `index.json` (offset, size and path of each file).
+`python3.14 tools/pack_romfs.py --nup <game>.nup --out build/romfs-oot111` writes the same image straight from the
+container, without the extracted RomFS on disk (then extract with `--only exefs`).
 
 ### 2. Generate the C
 

@@ -64,7 +64,7 @@ def main():
         raise SystemExit(__doc__)
     src, dst = Path(sys.argv[1]), Path(sys.argv[2])
     if not DEC.exists():
-        raise SystemExit(f'{DEC} missing: build it first from tools/zbic/zbic_dec.c')
+        raise SystemExit(f'{DEC} missing: run tools/build_zbic.py first')
     dst.mkdir(parents=True, exist_ok=True)
     for p in sorted(src.iterdir()):
         if p.is_file():
