@@ -91,11 +91,7 @@ void vk_caps_init(VkCtx *c) {
     // other way (dark lines along shadow-map edges), so the translator biases gather coordinates by the host's sub-texel
     // precision. NVIDIA rounds as Maxwell does.
     uint32_t gather = c->props.vendorID == 0x10de ? 0 : l->subTexelPrecisionBits;
-#ifdef _WIN32
-    vk_mem_flat_choose(0);
-#else
     vk_mem_flat_choose(c->props.vendorID == 0x10de && c->has_buffer_device_address);
-#endif
     // Translator fix bits 3 and 4 need SignedZeroInfNanPreserve for FP32 and demote to helper (Vulkan 1.3 feature, enabled
     // with everything the device reports in vk_device.c create_device); without them those bits are dropped silently.
     gfx_shader_xfix_support(fc.shaderSignedZeroInfNanPreserveFloat32 != 0, f13.shaderDemoteToHelperInvocation != 0);
