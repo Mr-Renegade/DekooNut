@@ -60,6 +60,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_RENDER_SCALE_DESC] = "Size of the 3D scene relative to the game resolution; the game's FSR scales it to "
                                   "that size. Above 100 % smooths jagged edges (supersampling) at a high GPU cost.",
     [UI_MENU_RENDER_SCALE_GAME] = "Game (83 %)",
+    [UI_MENU_DLSS] = "NVIDIA DLSS",
+    [UI_MENU_DLSS_DESC] = "Scales the 3D scene up with NVIDIA DLSS in place of the game's own filter. Quality is the "
+                          "model the game is tested with; Fast is a lighter one at about half the GPU time; Off leaves "
+                          "the scaling to the game and to the row below.",
+    [UI_MENU_DLSS_ON] = "Quality", [UI_MENU_DLSS_FAST] = "Fast", [UI_MENU_DLSS_OFF] = "Off",
     [UI_MENU_UPSCALER] = "Scaling to the window",
     [UI_MENU_UPSCALER_DESC] = "How the picture is scaled when the window is larger than the game resolution. FSR keeps "
                               "edges and detail sharper than bilinear.",
@@ -248,6 +253,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_RENDER_SCALE_DESC] = "Размер 3D-сцены относительно разрешения игры; FSR игры доводит её до этого размера. "
                                   "Выше 100 % сглаживает лесенки на краях (суперсэмплинг) ценой большой нагрузки на GPU.",
     [UI_MENU_RENDER_SCALE_GAME] = "Как в игре (83 %)",
+    [UI_MENU_DLSS] = "NVIDIA DLSS",
+    [UI_MENU_DLSS_DESC] = "Увеличивает 3D-сцену с помощью NVIDIA DLSS вместо собственного фильтра игры. «Качество» — "
+                          "модель, с которой игра проверена; «Быстрый» — более лёгкая, примерно вдвое меньше времени "
+                          "GPU; «Выкл.» оставляет масштабирование игре и строке ниже.",
+    [UI_MENU_DLSS_ON] = "Качество", [UI_MENU_DLSS_FAST] = "Быстрый", [UI_MENU_DLSS_OFF] = "Выкл.",
     [UI_MENU_UPSCALER] = "Масштабирование под окно",
     [UI_MENU_UPSCALER_DESC] = "Как картинка растягивается, когда окно больше разрешения игры. FSR сохраняет края и "
                               "детали чётче билинейного.",

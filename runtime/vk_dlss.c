@@ -36,6 +36,7 @@
 #define DLSS_APP_ID 0x4f6f544e61ull   // any id: NGX wants one for a non-registered application
 
 static int dlss_on, dlss_broken;
+static int dlss_avail;   // an NVIDIA card and the model library: DLSS can run here, on or off by the setting
 static NVSDK_NGX_Parameter *dlss_params;
 // One feature per render and output size (the game's dynamic resolution has a few levels); none is released while the
 // GPU may still use it, so they all live until the device goes. Switching features resets history.
@@ -45,6 +46,7 @@ static int nfeat, last_feat = -1;
 static uint64_t nevals;   // evaluations recorded so far; F[].used: the count at a feature's last use
 
 int vk_dlss_on(void) { return dlss_on && !dlss_broken; }
+int vk_dlss_available(void) { return dlss_avail; }
 
 // The extensions NGX asks for, as far as the device has them and they are not on already. VK_EXT_buffer_device_address is
 // left out: the Vulkan 1.2 bufferDeviceAddress feature is enabled, and the spec forbids both together.
@@ -119,13 +121,14 @@ static int dlss_dir_beside_exe(char *dir, size_t cap) {
 }
 
 void vk_dlss_init(VkCtx *c) {
-    if (!strcmp(cfg_value("OOT_DLSS"), "off")) { rt_log("dlss: off (the dlss setting): the stand-in stays"); return; }
     if (c->props.vendorID != 0x10de) { rt_log("dlss: off, not an NVIDIA GPU (vendor %#x): the stand-in stays", c->props.vendorID); return; }
     char dir[1024], logs[1024];
     if (!dlss_dir_beside_exe(dir, sizeof dir)) {
         rt_log("dlss: off, no " DLSS_MODEL " in a dlss folder beside the executable: the stand-in stays");
         return;
     }
+    dlss_avail = 1;   // the menu offers the setting from here on, also while it is off
+    if (!strcmp(cfg_value("OOT_DLSS"), "off")) { rt_log("dlss: off (the dlss setting): the stand-in stays"); return; }
     rt_log("dlss: model directory %s", dir);
     snprintf(logs, sizeof logs, "%s", "ngx");   // beside the binary (the run's working directory)
 #ifdef _WIN32

@@ -5,6 +5,7 @@
 #include "vk.h"
 
 int vk_dlss_on(void) { return 0; }
+int vk_dlss_available(void) { return 0; }
 void vk_dlss_instance_ext(const char **ext, uint32_t *n, uint32_t cap) { (void)ext, (void)n, (void)cap; }
 void vk_dlss_device_ext(const char **ext, uint32_t *n, uint32_t cap, const VkExtensionProperties *ep, uint32_t ne) {
     (void)ext, (void)n, (void)cap, (void)ep, (void)ne;
