@@ -232,7 +232,9 @@ def nvn2_inventory(romfs, workers=6, progress=None):
         dictionaries = list(sarc(zstd.decompress(stream.read(dic['size']))).values())
     rows.sort(key=lambda r: -r[2])   # the big archives first, so no worker is left with one at the end
     shaders, done = {}, 0
-    with concurrent.futures.ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context('fork'),
+    # fork where the system has it; Windows starts fresh processes, which import this module again.
+    start = 'fork' if 'fork' in multiprocessing.get_all_start_methods() else 'spawn'
+    with concurrent.futures.ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context(start),
                                                 initializer=_nvn2_init,
                                                 initargs=(str(romfs / 'romfs.bin'), dictionaries)) as pool:
         for found in pool.map(_nvn2_file, rows, chunksize=4):
