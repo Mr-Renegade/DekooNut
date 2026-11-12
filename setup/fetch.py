@@ -27,6 +27,8 @@ UV_URL = 'https://github.com/astral-sh/uv/releases/latest/download/' + (
     'uv-x86_64-pc-windows-msvc.zip' if host.WIN else 'uv-x86_64-unknown-linux-gnu.tar.gz')
 DOTNET_SCRIPT = 'https://dot.net/v1/dotnet-install.' + ('ps1' if host.WIN else 'sh')
 DOTNET_CHANNEL = '10.0'
+GIT_URL = 'https://github.com/git-for-windows/git/releases/download/v2.56.1.windows.1/MinGit-2.56.1-64-bit.zip'
+GIT_SHA256 = '4a92850b6e917da4fd010669b614b55dccf5b0ec333a534cc4be4700dfefdafd'
 DLSS_URL = 'https://github.com/NVIDIA/DLSS.git'
 DLSS_TAG = 'v310.9.16'
 DLSS_COMMIT = '9981c6350dc58c0ce21f024fd65e31e851c31689'
@@ -152,6 +154,24 @@ def dlss(ctx, run):
         raise SetupError('The NVIDIA DLSS SDK is incomplete after the download.', str(DLSS_DIR))
 
 
+def win_git(ctx):
+    """git for the steps that fetch pinned sources, when the PC has none: a portable copy in toolchain/git."""
+    if host.which('git'):
+        return
+    import hashlib
+    folder = ROOT / 'toolchain' / 'git'
+    archive = ROOT / 'toolchain' / 'mingit.zip'
+    download(ctx, GIT_URL, archive, 'git')
+    if hashlib.sha256(archive.read_bytes()).hexdigest() != GIT_SHA256:
+        archive.unlink()
+        raise SetupError('The git download does not match its checksum.', GIT_URL)
+    with zipfile.ZipFile(archive) as z:
+        z.extractall(folder)
+    archive.unlink()
+    if not host.which('git'):
+        raise SetupError('git could not be set up.', str(folder))
+
+
 def win_ready():
     tc = ROOT / 'toolchain'
     return ((tc / 'llvm-mingw' / 'bin' / 'clang.exe').is_file() and (tc / 'bin' / 'ninja.exe').is_file() and
@@ -170,7 +190,7 @@ def win_tools(ctx, run):
 
 def all_ready():
     extra_ok = all(host.which(name) for name in ('ninja', 'cmake'))
-    system = win_ready() if host.WIN else dlss_ready()
+    system = (win_ready() and bool(host.which('git'))) if host.WIN else dlss_ready()
     return bool(host.python312() and host.python314() and has_dotnet() and system and extra_ok)
 
 

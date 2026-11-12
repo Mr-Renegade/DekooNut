@@ -48,8 +48,10 @@ The full steps from your own copy of the game to a running build. The short form
     ./setup.sh --dest <folder>                          go on after a stop, or rebuild after `git pull`
     ./setup.sh --check                                  only say what this PC lacks
 
-- It asks for the system packages it cannot get itself with one command (on Ubuntu: clang, lld, git and the
-  development files of Vulkan, SDL3, Opus, libvpx, dav1d, zstd and zlib). The rest it fetches into this checkout,
+- It names the system packages it needs (on Ubuntu: clang, lld, git and the development files of Vulkan, SDL3,
+  Opus, libvpx, dav1d, zstd and zlib) with the one command that installs them, and runs that command itself when
+  asked (`--install-packages` with sudo; the window's "Install them now" with the desktop's password prompt). The
+  rest it fetches into this checkout,
   without root: uv and the two Python environments, ninja and cmake when the system has none, the .NET SDK
   (`toolchain/dotnet`) and the NVIDIA DLSS SDK at a pinned tag from NVIDIA's repository (`toolchain/dlss`, under
   NVIDIA's licence).
@@ -70,9 +72,10 @@ The full steps from your own copy of the game to a running build. The short form
 - On the PC it was written on (16 threads, RTX 4080 SUPER, NVMe) a first install takes about 19 minutes: 43 s for the
   game data, 37 s to recompile, 4 minutes to compile the game, 13 minutes to prepare the shaders. A second run on
   the same folder with nothing changed takes seconds.
-- Windows: `setup.bat` and the build's Windows path are written (`tools/win_deps.py` fetches the compiler and the
-  libraries into `toolchain/`; it asks for Python 3.14 and git only) but have not run on Windows yet. A Windows build
-  has no DLSS for now.
+- Windows: `setup.bat` fetches a Python of its own into `toolchain\python`, setup fetches git, the compiler and the
+  libraries (`tools/win_deps.py`) into `toolchain\`, so nothing has to be installed first. On a Windows 11 PC the
+  check, the tools step, the icon, the game program step and the window's build have run; the steps after them
+  (game data, generate, translator, mesh compiler, game, shaders) have not yet. A Windows build has no DLSS for now.
 - Tests without game files: `python3 tests/setup_test.py` (the bookkeeping), and `tests/setup_fake.py`, a stand-in
   backend that plays a build for the window (`build/setup/gui/dekoonut-setup --root . --backend "python3
   tests/setup_fake.py"`).

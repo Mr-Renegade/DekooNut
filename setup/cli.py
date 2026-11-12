@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -61,6 +62,7 @@ def info(display):
         'levels': [{'id': k, 'name': v['name'], 'about': v['about']} for k, v in quality.LEVELS.items()],
         'missing': [what for what, _ in missing],
         'install_command': host.install_command(missing) if missing else '',
+        'can_install': bool(host.install_argv(missing, graphical=True)),
         'gpu': cards[0][0] if cards else '',
     }, ensure_ascii=False))
     return 0
@@ -82,8 +84,44 @@ def check():
     print('Missing: ' + ', '.join(what for what, _ in missing))
     command = host.install_command(missing)
     if command:
-        print(f'\n    {command}\n')
+        print(f'\n    {command}\n\n(or: ./setup.sh --install-packages, which runs that line)')
     return 1
+
+
+def install_packages(as_json):
+    """Install the missing system packages: sudo in a terminal, the desktop's password prompt for the window."""
+    from .runner import Context, SetupError, Step, run_steps
+    from .steps import run
+
+    class Packages(Step):
+        id, title, always = 'packages', 'Installing the system packages', True
+
+        def run(self, ctx):
+            missing = host.missing_packages()
+            argv = host.install_argv(missing, graphical=as_json)
+            if not missing:
+                return
+            if not argv:
+                raise SetupError('Setup cannot install these itself on this system.',
+                                 'Missing: ' + ', '.join(what for what, _ in missing), host.install_command(missing))
+            if as_json:
+                ctx.progress('Waiting for your password, then installing', force=True)
+                run(ctx, argv, env=dict(os.environ), what='The package installation')
+            elif subprocess.run(argv).returncode:
+                raise SetupError('The package installation failed.', '', host.install_command(missing))
+            left = host.missing_packages()
+            if left:
+                raise SetupError('Some build tools are still missing.', ', '.join(what for what, _ in left),
+                                 host.install_command(left))
+
+    rep = Reporter(as_json=as_json)
+    steps = [Packages()]
+    rep.start(VERSION, '', '', steps)
+    ctx = Context(Path(os.devnull), rep, None)
+    ctx.save = lambda: None
+    result = run_steps(steps, ctx)
+    rep.emit('end', result=result, seconds=round(rep.elapsed(), 1))
+    return EXIT[result]
 
 
 def cancel(signum, frame):
@@ -131,6 +169,8 @@ def main(argv=None):
     ap.add_argument('--no-menu-entry', action='store_true', help='do not add DekooNut to the applications menu')
     ap.add_argument('--json', action='store_true', help='progress as JSON lines (what the window reads)')
     ap.add_argument('--check', action='store_true', help='only say what this PC lacks')
+    ap.add_argument('--install-packages', action='store_true',
+                    help='install the system packages --check names (asks for the password)')
     ap.add_argument('--info', action='store_true', help=argparse.SUPPRESS)
     ap.add_argument('--display', help=argparse.SUPPRESS)   # WxH, from the window, for the suggested level
     ap.add_argument('--gui', action='store_true', help='open the window (the default without --dest)')
@@ -139,6 +179,8 @@ def main(argv=None):
         return info(args.display)
     if args.check:
         return check()
+    if args.install_packages:
+        return install_packages(args.json)
     if args.gui or not args.dest:
         if args.game and not args.dest:
             ap.error('--dest is needed with --game')

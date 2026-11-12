@@ -161,7 +161,7 @@ static struct App {
     bool autobuild = false;
 
     // from --info
-    bool info_ready = false, installed = false;
+    bool info_ready = false, installed = false, can_install = false;
     std::string version, game, dest, gpu, install_command;
     std::vector<std::string> missing;
     std::vector<Level> levels;
@@ -247,6 +247,7 @@ static void take_info(const std::string &line) {
     A.gpu = j["gpu"].s;
     A.installed = j["installed"].b;
     A.install_command = j["install_command"].s;
+    A.can_install = j["can_install"].b;
     A.missing.clear();
     for (auto &m : j["missing"].a) A.missing.push_back(m.s);
     A.levels.clear();
@@ -270,24 +271,32 @@ static void load_nut(const std::string &path) {
     A.nut = t;
 }
 
+static void start_run(const std::vector<std::string> &args);
+
 static void start_build() {
     if (!A.missing.empty()) {   // the backend would say the same after a moment
         A.err_text = "This PC needs a few build tools first.";
         A.err_detail = "Missing: ";
         for (size_t i = 0; i < A.missing.size(); i++) A.err_detail += (i ? ", " : "") + A.missing[i];
         A.err_detail += A.install_command.empty() ? "\nInstall them with the system's package manager, then check again."
-                                                  : "\nRun this in a terminal, then check again:";
+                      : A.can_install ? "\nSetup can install them (it asks for your password), or run this in a terminal:"
+                                      : "\nRun this in a terminal, then check again:";
         A.err_command = A.install_command;
         A.card = CARD_ERROR, A.card_opened = false;
         return;
     }
+    std::vector<std::string> args = backend_args({"--json", "--game", A.game, "--dest", A.dest});
+    if (!A.levels.empty()) args.push_back("--quality"), args.push_back(A.levels[A.level].id);
+    start_run(args);
+}
+
+// Start the backend and show its steps: a build, or the installation of the system packages.
+static void start_run(const std::vector<std::string> &args) {
     A.steps.clear(), A.log.clear(), A.warnings.clear();
     A.cur = -1, A.frac = A.shown = 0, A.progress.clear();
     A.err_text.clear(), A.err_detail.clear(), A.err_command.clear(), A.play.clear();
     A.cancelling = false, A.show_log = false;
     A.started = SDL_GetTicks(), A.ended = 0;
-    std::vector<std::string> args = backend_args({"--json", "--game", A.game, "--dest", A.dest});
-    if (!A.levels.empty()) args.push_back("--quality"), args.push_back(A.levels[A.level].id);
     if (!g_build.start(args)) {
         A.err_text = "Setup could not be started.", A.err_detail = SDL_GetError();
         A.card = CARD_ERROR, A.card_opened = false;
@@ -335,7 +344,8 @@ static void take_event(const std::string &line) {
     } else if (type == "end") {
         A.ended = SDL_GetTicks();
         A.play = j["play"].s;
-        if (j["result"].s == "ok") A.card = CARD_DONE, A.flash = 1, A.installed = true;
+        if (j["result"].s == "ok" && A.play.empty()) A.card = CARD_NONE, ask_info();   // the packages are in: back to the form
+        else if (j["result"].s == "ok") A.card = CARD_DONE, A.flash = 1, A.installed = true;
         else if (j["result"].s == "cancelled") A.card = CARD_NONE;
         else A.card = CARD_ERROR;
         A.card_opened = false;
@@ -724,7 +734,7 @@ static void view_form(float w, float s) {
 
 static void view_build(float w, float s, float t) {
     ImGui::PushFont(F_SMALL);
-    ImGui::TextColored(GOLD, A.cancelling ? "STOPPING" : "BUILDING");
+    ImGui::TextColored(GOLD, A.cancelling ? "STOPPING" : A.steps.size() == 1 ? "ONE MOMENT" : "BUILDING");
     ImGui::PopFont();
     wrapped(F_HEAD, TEXT, A.cur >= 0 ? A.steps[A.cur].title : "Starting", w);
     char pct[16];
@@ -795,9 +805,14 @@ static void view_error(float w, float s) {
         ImGui::PopTextWrapPos();
         ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + size.y + 2 * pad + 14 * s));
         ImGui::PopFont();
-        bool just = A.copied == A.err_command && SDL_GetTicks() - A.copied_at < 1600;
-        if (button(just ? "Copied" : "Copy the command", bw, s, true)) copy_text(A.err_command);
-        if (!A.card_opened) ImGui::SetKeyboardFocusHere(-1);
+        bool just = A.copied == A.err_command && SDL_GetTicks() - A.copied_at < 1600, first = !A.card_opened;
+        if (A.can_install && g_build.p == nullptr) {   // setup runs the line itself; the desktop asks for the password
+            if (button("Install them now", w, s, true)) start_run(backend_args({"--install-packages", "--json"}));
+            if (first) ImGui::SetKeyboardFocusHere(-1), first = false;
+            gap(2 * s);
+        }
+        if (button(just ? "Copied" : "Copy the command", bw, s, !A.can_install)) copy_text(A.err_command);
+        if (first) ImGui::SetKeyboardFocusHere(-1);
         ImGui::SameLine(0, 14 * s);
         if (button("Check again", bw, s)) A.card = CARD_NONE, ask_info();
         gap(2 * s);

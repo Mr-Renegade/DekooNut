@@ -24,7 +24,6 @@ HEADERS = {'vulkan/vulkan.h': 'libvulkan-dev', 'SDL3/SDL.h': 'libsdl3-dev', 'opu
            'vpx/vpx_decoder.h': 'libvpx-dev', 'dav1d/dav1d.h': 'libdav1d-dev', 'zstd.h': 'libzstd-dev',
            'zlib.h': 'zlib1g-dev'}
 STDCXX = 'g++'   # brings libstdc++'s headers and its static library, which the game links
-WINGET = {'git': 'Git.Git', 'Python 3.14': 'Python.Python.3.14'}
 
 
 def tool_env():
@@ -33,7 +32,7 @@ def tool_env():
     tc = ROOT / 'toolchain'
     first = [ROOT / '.venv' / ('Scripts' if WIN else 'bin'), tc / 'dotnet', tc / 'uv']
     if WIN:
-        first += [tc / 'llvm-mingw' / 'bin', tc / 'bin', tc / 'deps-mingw' / 'bin']
+        first += [tc / 'llvm-mingw' / 'bin', tc / 'bin', tc / 'deps-mingw' / 'bin', tc / 'git' / 'cmd']
     env['PATH'] = os.pathsep.join([str(p) for p in first if p.is_dir()] + [env.get('PATH', '')])
     if (ROOT / 'toolchain' / 'dotnet' / ('dotnet' + EXE)).is_file():
         env['DOTNET_ROOT'] = str(ROOT / 'toolchain' / 'dotnet')
@@ -67,9 +66,8 @@ def _has_static_stdcxx(env):
 def missing_packages():
     """[(what, package)] for everything that needs the system's package manager."""
     env = tool_env()
-    if WIN:
-        return [(what, pkg) for what, pkg in WINGET.items()
-                if not (which('git', env) if what == 'git' else python314())]
+    if WIN:   # everything is fetched there; only a start with an old Python is in the way
+        return [] if python314() else [('Python 3.14 (start setup with setup.bat, which fetches it)', '')]
     out = [(name, pkg) for name, pkg in PROGRAMS.items() if not which(name, env)]
     clang = which('clang', env)
     out += [(header, pkg) for header, pkg in HEADERS.items() if not _has_header(header, clang, env)]
@@ -79,12 +77,22 @@ def missing_packages():
 
 
 def install_command(missing):
-    packages = sorted({pkg for _, pkg in missing})
-    if WIN:
-        return ' && '.join(f'winget install -e --id {pkg}' for pkg in packages)
-    if shutil.which('apt-get') or shutil.which('apt'):
+    packages = sorted({pkg for _, pkg in missing if pkg})
+    if packages and not WIN and (shutil.which('apt-get') or shutil.which('apt')):
         return 'sudo apt install ' + ' '.join(packages)
     return ''   # another distribution: the names of what is missing have to do
+
+
+def install_argv(missing, graphical):
+    """The command that installs the missing system packages itself, asking for the password in a terminal (sudo)
+    or through the desktop (pkexec); None when setup cannot do it here."""
+    packages = sorted({pkg for _, pkg in missing if pkg})
+    if not packages or WIN or not shutil.which('apt-get'):
+        return None
+    front = ['pkexec'] if graphical else ['sudo']
+    if not shutil.which(front[0]):
+        return None
+    return front + ['env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'install', '-y'] + packages
 
 
 def cpu_flags():

@@ -29,6 +29,7 @@ def main():
     ap.add_argument('--scenario', default='ok')
     ap.add_argument('--speed', type=float, default=1.0)
     ap.add_argument('--info', action='store_true')
+    ap.add_argument('--install-packages', action='store_true')
     ap.add_argument('--json', action='store_true')
     ap.add_argument('--game', default='')
     ap.add_argument('--dest', default='')
@@ -45,9 +46,21 @@ def main():
                         'with: 4K output through DLSS at 60 fps.'},
                        {'id': 'light', 'name': 'Light', 'about': 'A made-up second level, to show the choice: 1440p output, a smaller 3D picture.'}],
             'missing': ['clang', 'ld.lld', 'SDL3/SDL.h', 'opus/opus.h'] if missing else [],
-            'install_command': COMMAND if missing else '', 'gpu': 'NVIDIA GeForce RTX 3070'}))
+            'install_command': COMMAND if missing else '', 'can_install': missing,
+            'gpu': 'NVIDIA GeForce RTX 3070'}))
         return 0
     rep = Reporter(as_json=True)
+    if a.install_packages:   # as the real thing: one step, then an end without a launcher
+        step = type('Packages', (), {'id': 'packages', 'title': 'Installing the system packages'})()
+        rep.start('0.1.0', '', '', [step])
+        rep.step('packages', 'started')
+        rep.progress('packages', 'Waiting for your password, then installing', force=True)
+        for n in range(30):
+            rep.log(f'Setting up package {n + 1} of 30 ...')
+            time.sleep(0.1 / a.speed)
+        rep.step('packages', 'done', seconds=3)
+        rep.emit('end', result='ok', seconds=3)
+        return 0
     steps = all_steps()
     rep.start('0.1.0', a.dest, a.dest + '/.setup/logs/setup.log', steps)
     for s in steps:

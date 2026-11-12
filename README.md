@@ -24,42 +24,54 @@ Everything happens on your PC, from your own copy of the game.
 DekooNut is an unofficial project. It is not affiliated with, endorsed by or supported by Nintendo. The Legend of
 Zelda and Ocarina of Time are trademarks of Nintendo.
 
-Linux x86-64 with an NVIDIA GPU is what the build is played on: 4K output through DLSS at 60 fps. The Windows side
-of the runtime (`runtime/platform/win32.c`, the `*_win.c` files) is kept in step with the Linux side but is not
-built or tested.
+Linux x86-64 with an NVIDIA GPU is what the build is played on: 4K output through DLSS at 60 fps. A Windows build is
+new: it compiles and its set-up's first steps run there, but it has not been played through yet.
 
 ## What you need
 
-- Your own legally obtained copy of the game, update 1.1.1, dumped from your own console.
-- Linux x86-64 and a graphics card with Vulkan 1.3 and mesh shaders. DLSS needs an NVIDIA card and the NVIDIA DLSS
-  SDK; without them the game uses its other upscaler.
-- To build: clang, lld, ninja, cmake, Python 3.12 and 3.14, the .NET 10 SDK, and the development files of Vulkan,
-  SDL3, Opus, libvpx, dav1d and zstd.
+- Your own legally obtained copy of the game with update 1.1.1, dumped from your own console: a `.nup` file, or the
+  `exefs` and `romfs` folders.
+- A 64-bit Linux PC with an NVIDIA graphics card (8 GB of video memory or more), 16 GB of memory, a CPU with AVX2
+  and about 40 GB of free disk space. The build is tested on Ubuntu 26.04.
+- An internet connection for the set-up: it fetches the build tools.
 
-## Build and run
+## Install and play
 
+    git clone https://github.com/Mr-Renegade/DekooNut.git
+    cd DekooNut
     ./setup.sh
 
-opens the setup window: choose your game file and an install folder, press Build, then Play. It names the system
-packages to install first, fetches the other build tools into this checkout, builds the game into the install
-folder and adds DekooNut to the applications menu, with the icon taken from your game.
-`./setup.sh --game <game>.nup --dest <folder>` does the same from a terminal.
+1. The window opens. Choose your game file, the folder to install into and a quality level; the level suggested
+   for your graphics card is already chosen.
+2. Press **Build the game**. If the PC lacks system packages (a compiler and the development files of a few
+   libraries), the window names them and installs them when you press **Install them now**; it asks for your
+   password. Everything else (Python environments, the .NET SDK, the NVIDIA DLSS SDK) it fetches into the checkout
+   by itself, without touching the system.
+3. Wait. The game data is copied, the game's code is recompiled and compiled, and the shaders are prepared for your
+   graphics card: about 20 minutes on a fast PC, longer on a slow one. It can be stopped and goes on where it was.
+4. Press **Play**. DekooNut is also in your applications menu from now on, with the game's own icon, and
+   `<install folder>/dekoonut` starts it from a terminal.
 
-By hand:
+The same from a terminal, without the window:
 
-    python3.14 tools/extract_nup.py <game>.nup --package base --overlay-update --out build/extracted/oot111-dump
-    python3 tools/build_zbic.py
-    python3 tools/nso_plain.py build/extracted/oot111-dump/exefs build/extracted/oot111/exefs
-    python3 tools/pack_romfs.py --dir build/extracted/oot111-dump/romfs --out build/romfs-oot111
-    .venv/bin/python recomp/gen.py --exefs build/extracted/oot111/exefs --out generated/oot111 --patches recomp/patches-oot111.txt
-    python3 tools/build_xlate.py
-    python3 tools/build_mesh.py
-    python3 tools/build_game.py --exefs build/extracted/oot111/exefs --romfs build/romfs-oot111 --out build/oot111 --dlss-sdk <DLSS SDK dir>
-    tools/prepare_oot.sh build/oot111
-    cd build/oot111 && OOT_XLATE=../xlate/oot_xlate ./oot
+    ./setup.sh --check                                   what this PC lacks, and the level it would get
+    ./setup.sh --install-packages                        install the system packages (sudo)
+    ./setup.sh --game <game>.nup --dest <folder>         build
+    ./setup.sh --dest <folder> --quality balanced        change the level of an install
 
-Each step, what it needs and what it writes: [docs/building.md](docs/building.md). Settings are in `oot.ini` next to
-`oot` (see `oot.ini.example`) and in the in-game menu.
+**Quality levels.** Default is what the game is played and tested with (4K output through DLSS at 60 fps on a 16 GB
+card). Balanced and Light are for 8 GB cards such as an RTX 3070: [docs/quality-levels.md](docs/quality-levels.md)
+has the numbers. A level is a few lines in the install's `oot.ini`, which you can also edit by hand
+(`oot.ini.example` lists every setting); many settings change in the in-game menu as well.
+
+**Updating.** `git pull`, then `./setup.sh --dest <install folder>` (or the window): only what changed is rebuilt.
+Your saves are in the install folder's `profile` and stay.
+
+**Windows.** `setup.bat` is the same set-up for Windows; it fetches everything it needs, Python and git included.
+Its first steps run there; a complete install on Windows has not been done yet, and a Windows build has no DLSS for
+now.
+
+Building by hand, step by step, and what each step writes: [docs/building.md](docs/building.md).
 
 ## More
 

@@ -290,6 +290,7 @@ class Tools(Step):
     def run(self, ctx):
         fetch.venv314(ctx, run)
         if WIN:
+            fetch.win_git(ctx)
             fetch.win_tools(ctx, run)
         fetch.venv312(ctx, run)
         fetch.dotnet(ctx, run)
