@@ -17,6 +17,23 @@ LEVELS = {
         'pack': 'hs625', 'mods': ['dynres:0.625', 'heap:208'], 'env': {},
         'ini': {'romfs_mods': 'gamedata/hs625', 'gfx_scale': '0'}, 'needs': {'vram_gb': 10, 'ram_gb': 16},
     },
+    # Measured on an RTX 3070 (8 GB) with a Ryzen 5 9600X at 2560x1440, Hyrule Field and Kakariko test saves
+    # (docs/quality-levels.md): Default 41 fps there; Balanced 55 fps standing in the field, 60 running through it and
+    # in the village; Light 60 everywhere. Both hold the game's 6 GB video-memory budget on that card.
+    'balanced': {
+        'name': 'Balanced',
+        'about': "For 8 GB cards such as an RTX 3070: the game's own 1280x720 scene, the lighter DLSS model and no "
+                 'grass blades. 55 to 60 fps at 2560x1440 on that card.',
+        'pack': None, 'mods': [], 'env': {},
+        'ini': {'gfx_scale': '2', 'dlss': 'fast', 'grass': 'off'}, 'needs': {'vram_gb': 8, 'ram_gb': 16},
+    },
+    'light': {
+        'name': 'Light',
+        'about': 'Balanced without DLSS: FSR scales the picture. 60 fps at 2560x1440 on an RTX 3070; the choice for '
+                 'cards without DLSS.',
+        'pack': None, 'mods': [], 'env': {},
+        'ini': {'gfx_scale': '2', 'dlss': 'off', 'grass': 'off'}, 'needs': {'vram_gb': 8, 'ram_gb': 16},
+    },
 }
 DEFAULT = 'default'
 

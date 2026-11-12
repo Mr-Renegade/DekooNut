@@ -48,6 +48,9 @@
 # with on a fast card; fast is a lighter model at about half the GPU time (2.1 instead of 4.5 ms a frame for
 # 2560x1440 on an RTX 3070); off leaves the game's own upscale to a plain filter. Read at start.
 # dlss = on
+# Grass: off leaves the grass blades out (trees, flowers and undergrowth stay), which saves about 2.7 ms of GPU time
+# a frame in Hyrule Field on an RTX 3070. Changes while the game runs take effect at once.
+# grass = on
 # Scaling to the window when it is larger than the game resolution: fsr (AMD FSR 1) or bilinear, and FSR's sharpening
 # from 0 (off) to 100. Changes while the game runs take effect at once.
 # upscaler = fsr

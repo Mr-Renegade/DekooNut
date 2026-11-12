@@ -927,6 +927,25 @@ static int mesh_pair_drop(const VkExec *ex) {
     return 0;
 }
 
+// grass = off skips the draws of the grass's eight mesh stages (turf4, turf1, blade), depth pre-pass and colour pass
+// alike: about 2.7 ms of GPU time a frame in Hyrule Field on an RTX 3070. The keys are this game version's.
+static int mesh_grass_off(uint64_t mesh_key) {
+    static const uint64_t grass[] = {0x0473b892e8117e02ull, 0x1f80a1f5a6315acbull, 0x41020b833e54370dull, 0x8853f52bce8b4b62ull,
+                                     0x2cf66e5f5eafcc22ull, 0xf01423cbea3f901full, 0x2b0af1eb80431d04ull, 0x3ccdc1a64701adf6ull};
+    static unsigned seen = ~0u;
+    static int off;
+    unsigned v = cfg_version();
+    if (v != seen) {
+        int now = !strcmp(cfg_value("OOT_GRASS"), "off");
+        if (now != off || seen == ~0u) rt_log("mesh: grass %s (the grass setting)", now ? "off: its draws are skipped" : "on");
+        off = now, seen = v;
+    }
+    if (!off) return 0;
+    for (size_t i = 0; i < sizeof grass / sizeof *grass; i++)
+        if (grass[i] == mesh_key) return 1;
+    return 0;
+}
+
 static int mesh_draw_at(VkExec *ex, const p_draw_mesh *draw, uint64_t indirect) {
     if (!mesh_cache_dir() || !vk_ctx()->has_mesh_shader || ex->render_disabled || !ex->prog || draw->first || !draw->count)
         return 0;
@@ -936,6 +955,7 @@ static int mesh_draw_at(VkExec *ex, const p_draw_mesh *draw, uint64_t indirect) 
     // Native control byte 0x5f is the output primitive's vertex count: 3 in almost every mesh stage, 1 (points) in two.
     // tools/mesh always declares triangles, so such stages are drawn as triangles all the same (and show streaks).
     if (mesh_pair_drop(ex)) return 1;   // mesh_pair: this object's colour draw was skipped
+    if (mesh_grass_off(src7)) return 1;
     MeshModule *mesh = mesh_module_get(src7, pk7, 7, 0, ctl, code), *task = NULL;
     if (mesh) mesh = mesh_module_fit(ex, mesh, ctl, code);
     if (!mesh) {

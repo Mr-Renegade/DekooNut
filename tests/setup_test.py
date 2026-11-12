@@ -87,12 +87,13 @@ def main():
 
         # the launcher and the menu entry
         steps.MENU_ENTRY = Path(tmp) / 'applications' / 'dekoonut.desktop'
-        ctx = Context(dest, Reporter(as_json=True, out=io.StringIO()), types.SimpleNamespace(no_menu_entry=False))
+        ctx = Context(dest, Reporter(as_json=True, out=io.StringIO()), types.SimpleNamespace(no_menu_entry=steps.WIN))
         ctx.state['quality'] = quality.DEFAULT
         steps.Finish().run(ctx)
-        launcher = (dest / 'dekoonut').read_text()
+        launcher = (dest / steps.LAUNCHER).read_text()
         level = quality.level(None)
-        check('the launcher starts oot from its own folder', 'exec ./oot "$@"' in launcher and 'cd "$here"' in launcher, True)
+        start, home = ('start "" "%~dp0oot.exe" %*', 'cd /d "%~dp0"') if steps.WIN else ('exec ./oot "$@"', 'cd "$here"')
+        check('the launcher starts oot from its own folder', start in launcher and home in launcher, True)
         ini = (dest / 'oot.ini').read_text()
         check('the level\'s pack is named once: in oot.ini when the level says so, else by the launcher',
               (f'gamedata/{level["pack"]}' in launcher, steps.ini_get(ini, 'romfs_mods')),
@@ -104,12 +105,13 @@ def main():
         if 'gfx_scale' in level.get('ini', {}):
             check('a setting the player changed is left alone', steps.ini_get((dest / 'oot.ini').read_text(), 'gfx_scale'), '1')
         check('the launcher shows no overlay', 'MANGOHUD' in launcher or 'PERF_OVERLAY' in launcher, False)
-        entry = steps.MENU_ENTRY.read_text()
-        check('the menu entry starts the launcher with the install\'s icon',
-              f'Exec="{dest / "dekoonut"}"' in entry and f'Icon={dest / "dekoonut.png"}' in entry, True)
-        steps.MENU_ENTRY.write_text('[Desktop Entry]\nName=Someone else\n')
-        steps.Finish().run(ctx)
-        check('a menu entry setup did not write is left alone', 'Someone else' in steps.MENU_ENTRY.read_text(), True)
+        if not steps.WIN:   # the Start menu shortcut is written by PowerShell: checked on a real Windows only
+            entry = steps.MENU_ENTRY.read_text()
+            check('the menu entry starts the launcher with the install\'s icon',
+                  f'Exec="{dest / "dekoonut"}"' in entry and f'Icon={dest / "dekoonut.png"}' in entry, True)
+            steps.MENU_ENTRY.write_text('[Desktop Entry]\nName=Someone else\n')
+            steps.Finish().run(ctx)
+            check('a menu entry setup did not write is left alone', 'Someone else' in steps.MENU_ENTRY.read_text(), True)
 
     name, why = quality.suggest('Card', 16 * 1024, (3840, 2160))
     check('a strong card gets the first level', name, next(iter(quality.LEVELS)))
