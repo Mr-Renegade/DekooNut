@@ -294,8 +294,7 @@ class Tools(Step):
             fetch.win_tools(ctx, run)
         fetch.venv312(ctx, run)
         fetch.dotnet(ctx, run)
-        if not WIN:
-            fetch.dlss(ctx, run)
+        fetch.dlss(ctx, run)
 
 
 class Icon(Step):
@@ -494,7 +493,7 @@ class Game(Step):
 
     def current(self, ctx, record):
         return (ctx.dest / OOT).is_file() and (ctx.dest / 'romfs-index.bin').is_file() and \
-            (WIN or any((ctx.dest / 'dlss').glob('libnvidia-ngx-dlss.so.*')))
+            any((ctx.dest / 'dlss').glob('nvngx_dlss.dll' if WIN else 'libnvidia-ngx-dlss.so.*'))
 
     def run(self, ctx):
         out = ctx.work / 'build'
@@ -510,16 +509,15 @@ class Game(Step):
         if WIN:
             for dll in out.glob('*.dll'):   # the libraries the build put beside the program
                 install(dll, ctx.dest / dll.name)
-        else:
-            model = fetch.dlss_model()
-            install(model, ctx.dest / 'dlss' / model.name)
+        model = fetch.dlss_model()
+        install(model, ctx.dest / 'dlss' / model.name)
         return {'sha256': file_sha256(ctx.dest / OOT)}
 
     @staticmethod
     def system_args():
         tc = ROOT / 'toolchain'
-        return ['--toolchain', tc / 'llvm-mingw', '--deps', tc / 'deps-mingw', '--ninja', tc / 'bin' / 'ninja.exe'] \
-            if WIN else ['--dlss-sdk', fetch.DLSS_DIR]
+        win = ['--toolchain', tc / 'llvm-mingw', '--deps', tc / 'deps-mingw', '--ninja', tc / 'bin' / 'ninja.exe']
+        return (win if WIN else []) + ['--dlss-sdk', fetch.DLSS_DIR]
 
 
 class Shaders(Step):

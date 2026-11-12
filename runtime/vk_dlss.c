@@ -5,6 +5,8 @@
 // headers and library stay outside the repository), the driver's NGX core (libnvidia-ngx.so.1) and the
 // model library libnvidia-ngx-dlss.so.<version> from a dlss/ folder beside the executable, else the
 // executable's own folder.
+// On Windows the loader is nvsdk_ngx_s.lib, a Visual C++ library: vk_dlss_msvc_win.c gives it the dozen Visual C++
+// runtime symbols this toolchain lacks. The NGX core is the driver's nvngx.dll, the model library nvngx_dlss.dll.
 //
 // Preset M for every mode: the mode follows the render/output ratio, LDR colour (no IsHDR, no auto exposure), no jitter,
 // motion in render pixels at render size, depth not inverted.
@@ -14,9 +16,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
+#ifdef _WIN32
+#include <windows.h>
+#define DLSS_MODEL "nvngx_dlss.dll"
+#else
 #include <dirent.h>
 #include <sys/stat.h>
-#include <wchar.h>
+#define DLSS_MODEL "libnvidia-ngx-dlss.so"
+#endif
 
 #include "cfg.h"
 #include "host.h"
@@ -65,29 +73,46 @@ void vk_dlss_instance_ext(const char **ext, uint32_t *n, uint32_t cap) {
 }
 
 static wchar_t *wide(const char *s) {
+#ifdef _WIN32   // paths are UTF-8 here; mbstowcs would follow the C locale
+    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    wchar_t *w = calloc(n > 0 ? (size_t)n : 1, sizeof *w);
+    if (w && n > 0) MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n);
+    return w;
+#else
     size_t n = strlen(s) + 1;
     wchar_t *w = calloc(n, sizeof *w);
     if (w) mbstowcs(w, s, n);
     return w;
+#endif
 }
 
 // 1 when dir (beside the executable: its dlss/ folder, else its own folder) holds the model library
-// libnvidia-ngx-dlss.so.<version> beside the executable.
+// (libnvidia-ngx-dlss.so.<version>; nvngx_dlss.dll on Windows).
+#ifdef _WIN32
+#define DLSS_SEP "\\"
+static int dlss_has_model(const char *d) {
+    char path[1100];
+    snprintf(path, sizeof path, "%s\\" DLSS_MODEL, d);
+    return plat_file_exists(path);
+}
+#else
+#define DLSS_SEP "/"
 static int dlss_has_model(const char *d) {
     DIR *dp = opendir(d);
     if (!dp) return 0;
     int found = 0;
-    for (struct dirent *de; !found && (de = readdir(dp));) found = !strncmp(de->d_name, "libnvidia-ngx-dlss.so", 21);
+    for (struct dirent *de; !found && (de = readdir(dp));) found = !strncmp(de->d_name, DLSS_MODEL, sizeof DLSS_MODEL - 1);
     closedir(dp);
     return found;
 }
+#endif
 static int dlss_dir_beside_exe(char *dir, size_t cap) {
     char exe[1024];
     if (!plat_exe_path(exe, sizeof exe)) return 0;
-    char *slash = strrchr(exe, '/');
+    char *slash = plat_last_sep(exe);
     if (!slash) return 0;
     *slash = 0;
-    snprintf(dir, cap, "%s/dlss", exe);
+    snprintf(dir, cap, "%s" DLSS_SEP "dlss", exe);
     if (dlss_has_model(dir)) return 1;
     snprintf(dir, cap, "%s", exe);
     return dlss_has_model(dir);
@@ -98,12 +123,16 @@ void vk_dlss_init(VkCtx *c) {
     if (c->props.vendorID != 0x10de) { rt_log("dlss: off, not an NVIDIA GPU (vendor %#x): the stand-in stays", c->props.vendorID); return; }
     char dir[1024], logs[1024];
     if (!dlss_dir_beside_exe(dir, sizeof dir)) {
-        rt_log("dlss: off, no libnvidia-ngx-dlss.so in a dlss folder beside the executable: the stand-in stays");
+        rt_log("dlss: off, no " DLSS_MODEL " in a dlss folder beside the executable: the stand-in stays");
         return;
     }
     rt_log("dlss: model directory %s", dir);
     snprintf(logs, sizeof logs, "%s", "ngx");   // beside the binary (the run's working directory)
+#ifdef _WIN32
+    plat_file_mkdir_p(logs);
+#else
     if (mkdir(logs, 0755) && errno != EEXIST) snprintf(logs, sizeof logs, ".");
+#endif
     wchar_t *wdir = wide(dir), *wlogs = wide(logs);
     const wchar_t *paths[1] = {wdir};
     NVSDK_NGX_FeatureCommonInfo fi;

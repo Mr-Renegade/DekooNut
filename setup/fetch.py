@@ -7,7 +7,6 @@
     Python 3.14     .venv-py314         only when the system's python3 is older
     .NET 10 SDK     toolchain/dotnet    builds the shader translator; skipped when `dotnet` already has an SDK 10
     DLSS SDK        toolchain/dlss      NVIDIA's SDK at a pinned tag: headers, the loader library, the model library
-                                        (Linux; a Windows build has no DLSS yet)
     Windows only    toolchain/llvm-mingw, deps-mingw, bin: the compiler and the libraries (tools/win_deps.py)
 
 Each is skipped when it is there. Nothing is installed outside this checkout.
@@ -127,14 +126,17 @@ def dotnet(ctx, run):
         raise SetupError('The .NET SDK could not be set up.', 'The log has the details.')
 
 
+DLSS_LIB = DLSS_DIR / 'lib' / ('Windows_x86_64' if host.WIN else 'Linux_x86_64')
+DLSS_LOADER = DLSS_LIB / 'x64' / 'nvsdk_ngx_s.lib' if host.WIN else DLSS_LIB / 'libnvsdk_ngx.a'
+
+
 def dlss_ready():
-    return ((DLSS_DIR / 'include' / 'nvsdk_ngx_vk.h').is_file() and
-            (DLSS_DIR / 'lib' / 'Linux_x86_64' / 'libnvsdk_ngx.a').is_file() and bool(dlss_model()))
+    return (DLSS_DIR / 'include' / 'nvsdk_ngx_vk.h').is_file() and DLSS_LOADER.is_file() and bool(dlss_model())
 
 
 def dlss_model():
     """The model library the game loads at run time from its dlss folder."""
-    found = sorted((DLSS_DIR / 'lib' / 'Linux_x86_64' / 'rel').glob('libnvidia-ngx-dlss.so.*'))
+    found = sorted((DLSS_LIB / 'rel').glob('nvngx_dlss.dll' if host.WIN else 'libnvidia-ngx-dlss.so.*'))
     return found[-1] if found else None
 
 
@@ -146,9 +148,13 @@ def dlss(ctx, run):
     if DLSS_DIR.exists():
         shutil.rmtree(DLSS_DIR)
     DLSS_DIR.parent.mkdir(parents=True, exist_ok=True)
-    git = ['git', '-C', str(DLSS_DIR)]
-    run(ctx, ['git', 'clone', '--filter=blob:none', '--no-checkout', DLSS_URL, str(DLSS_DIR)])
-    run(ctx, git + ['sparse-checkout', 'set', '--no-cone', '/LICENSE.txt', '/include/', '/lib/Linux_x86_64/'])
+    exe = host.which('git') or 'git'   # Windows: maybe the portable one in toolchain/git
+    git = [exe, '-C', str(DLSS_DIR)]
+    run(ctx, [exe, 'clone', '--filter=blob:none', '--no-checkout', DLSS_URL, str(DLSS_DIR)])
+    # Windows: only the loader and the model library of Super Resolution (the folder holds 250 MB of other libraries).
+    libs = ['/lib/Windows_x86_64/x64/nvsdk_ngx_s.lib', '/lib/Windows_x86_64/rel/nvngx_dlss.dll'] if host.WIN \
+        else ['/lib/Linux_x86_64/']
+    run(ctx, git + ['sparse-checkout', 'set', '--no-cone', '/LICENSE.txt', '/include/', *libs])
     run(ctx, git + ['checkout', '--detach', DLSS_COMMIT])
     if not dlss_ready():
         raise SetupError('The NVIDIA DLSS SDK is incomplete after the download.', str(DLSS_DIR))
@@ -190,8 +196,8 @@ def win_tools(ctx, run):
 
 def all_ready():
     extra_ok = all(host.which(name) for name in ('ninja', 'cmake'))
-    system = (win_ready() and bool(host.which('git'))) if host.WIN else dlss_ready()
-    return bool(host.python312() and host.python314() and has_dotnet() and system and extra_ok)
+    system = win_ready() and bool(host.which('git')) if host.WIN else True
+    return bool(host.python312() and host.python314() and has_dotnet() and system and dlss_ready() and extra_ok)
 
 
 if __name__ == '__main__':

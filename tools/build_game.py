@@ -119,6 +119,7 @@ INSTALL_SIDE = {'romfs.c', 'patches.c'}
 # The NVIDIA DLSS SDK (RTX SDK licence, never in the repository): runtime/vk_dlss.c includes its headers and the link
 # takes its Linux loader. --dlss-sdk DIR, else OOT_DLSS_SDK.
 DLSS_SDK = None
+WIN_NGX_LIB = Path('lib') / 'Windows_x86_64' / 'x64' / 'nvsdk_ngx_s.lib'   # the loader of a Windows build
 LIB_NAME = 'libootrt.a'
 AR = UCRT / 'llvm-ar.exe' if HOST_WIN else on_path('llvm-ar')
 WINDRES = UCRT / 'windres.exe'   # runtime/oot.rc: the Windows manifest
@@ -205,10 +206,12 @@ RUNTIME = ROOT / 'runtime'   # --runtime: a copy of runtime/ lets a task build w
 
 def other_os(name):
     """A runtime file for another OS: Win32 ones (*_win.*, platform/win32.c, oot.rc) off Windows, the SDL window's
-    (*_sdl.*), platform/linux.c and vk_dlss.c (vk_dlss_win.c stands in) on Windows."""
+    (*_sdl.*) and platform/linux.c on Windows. DLSS on Windows: vk_dlss.c with vk_dlss_msvc_win.c when the SDK is
+    there, else vk_dlss_win.c stands in."""
     stem = name.rsplit('.', 1)[0]
     if WIN:
-        return stem.endswith('_sdl') or name in ('linux.c', 'vk_dlss.c')
+        dlss_out = ('vk_dlss_win.c',) if DLSS_SDK else ('vk_dlss.c', 'vk_dlss_msvc_win.c')
+        return stem.endswith('_sdl') or name == 'linux.c' or name in dlss_out
     return stem.endswith('_win') or name in ('win32.c', 'oot.rc')
 
 
@@ -290,6 +293,11 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     libs = [f'-L {cmd_path(DEPS / "lib")}'] + (LLVM_LINK_LIBS if WIN else LINK_LIBS) if DEPS else LINK_LIBS
     if DLSS_SDK and not WIN and not make_lib:
         libs = [cmd_path(DLSS_SDK / 'lib' / 'Linux_x86_64' / 'libnvsdk_ngx.a')] + libs
+    if DLSS_SDK and WIN and not make_lib:
+        # NVIDIA's loader is a Visual C++ static library. It names that compiler's runtime libraries, which are not
+        # here and not needed: runtime/vk_dlss_msvc_win.c has what it uses of them.
+        libs = [cmd_path(DLSS_SDK / WIN_NGX_LIB)] + libs + [f'-Wl,-Xlink=-nodefaultlib:{n}' for n in
+                                                           ('libcpmt', 'libcmt', 'oldnames')]
     # A compiler cache (sccache) may front clang: every lift rewrites the generated chunks with the same contents, so
     # the cached objects save the compile step on the next build.
     cache = f'{cmd_arg(os.environ["SCCACHE"])} ' if os.environ.get('SCCACHE') else ''
@@ -793,6 +801,13 @@ def main():
             sys.exit(f'build_game: runtime/vk_dlss.c needs the DLSS SDK (--dlss-sdk DIR or OOT_DLSS_SDK); '
                      f'{sdk} has no include/nvsdk_ngx_vk.h')
         DLSS_SDK = sdk.resolve()
+    elif WIN and 'vk_dlss.c' not in skip:   # optional there: without the SDK vk_dlss_win.c stands in
+        sdk = args.dlss_sdk or (Path(os.environ['OOT_DLSS_SDK']) if os.environ.get('OOT_DLSS_SDK') else None)
+        if sdk and (sdk / 'include' / 'nvsdk_ngx_vk.h').is_file() and (sdk / WIN_NGX_LIB).is_file():
+            DLSS_SDK = sdk.resolve()
+        elif sdk:
+            print(f'build_game: {sdk} has no include/nvsdk_ngx_vk.h and {WIN_NGX_LIB}: a build without DLSS',
+                  file=sys.stderr)
     main_out = (ROOT / 'build' / args.version).resolve()
     pairs = None
     if args.make_runtime_lib:
