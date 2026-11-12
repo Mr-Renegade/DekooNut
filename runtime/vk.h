@@ -182,7 +182,7 @@ void vk_mem_bound_note(void *pool);
 #define VK_MEM_BOUND(sp) do { if ((rt_trace & RT_TRACE_PERF) && (sp).pool) vk_mem_bound_note((sp).pool); } while (0)
 // VRAM mirror of buffer-bound pools (vk_memory.c); vk_mirror_on is set at device selection for a discrete GPU. VK_MEM_USE creates a
 // pool's mirror on first use, VK_MEM_PICK takes an existing one, vk_mem_gpu_wrote queues a mirror's GPU-written range for write-back
-// at the end of the submission. VRAM mirror and write-back: see README, "VRAM mirror and write-back".
+// at the end of the submission. VRAM mirror and write-back: see docs/how-it-works.md, "VRAM mirror and write-back".
 extern int vk_mirror_on;
 void vk_mem_use(VkMemSpan *sp);
 void vk_mem_pick(VkMemSpan *sp);
@@ -413,7 +413,7 @@ void vk_backend_shutdown(void);            // presents, vk_sync_shutdown, vk_mem
 
 // ---- pipelines (vk_pipeline.c)
 // Binding model: one descriptor set, set 0, per pipeline: the support buffer at binding 0, then the vertex stage's bindings,
-// then the fragment stage's. Pipelines and descriptor sets: see README, "Pipelines and descriptor sets".
+// then the fragment stage's. Pipelines and descriptor sets: see docs/how-it-works.md, "Pipelines and descriptor sets".
 // Everything a graphics pipeline depends on, as the op stream carries it; fields covered by dynamic state are left out of the pipeline key.
 typedef struct VkPipeState {
     const GfxShader *vs, *fs;              // gfx_shader_get results; fs NULL: no fragment stage (depth only)

@@ -2278,7 +2278,7 @@ static void spv_repair(GfxShader *s) {
 }
 
 
-// Checked modules are kept as zstd frames and decompressed into a per-thread ring: see README, "Shader cache".
+// Checked modules are kept as zstd frames and decompressed into a per-thread ring: see docs/how-it-works.md, "Shader cache".
 // A returned pointer stays valid on that thread until SPVZ_RING - 1 other modules were asked for there.
 #define SPVZ_RING 16
 #define SPVZ_KEEP (256u << 10)   // a ring buffer larger than this is given back when its slot is reused
@@ -2388,7 +2388,7 @@ void gfx_shader_local_size(const GfxShader *s, uint32_t local[3]) { memcpy(local
 
 // ---- answers met in play (shader-answers.bin, shader-programs.bin)
 // Every (program, answers) a gfx_shader_get* resolves is recorded next to pipeline-keys.bin, so first-start
-// preparation translates the variants play needs. Formats: see README, "Shader cache".
+// preparation translates the variants play needs. Formats: see docs/how-it-works.md, "Shader cache".
 // A file with another header is rewritten; a torn tail is cut off at open.
 #define ANS_VERSION 2                                     // independent GS input selector; readers retain version 1
 #define ANS_PACKED GS_ANS_PACKED

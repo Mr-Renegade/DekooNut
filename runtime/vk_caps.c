@@ -1,6 +1,6 @@
 // What the runtime branches on, logged once at device creation, and the fallbacks for GPUs other than the RX 9070 (no
 // shaderFloat64, a storage-buffer offset alignment above 4, no fast-linking pipeline library, no 32-lane subgroup pin):
-// see README, "GPU capability fallbacks". The defaults leave the shader cache keys unchanged (gfx_shader.c).
+// see docs/how-it-works.md, "GPU capability fallbacks". The defaults leave the shader cache keys unchanged (gfx_shader.c).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

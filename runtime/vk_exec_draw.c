@@ -1,5 +1,5 @@
 // Draws, binds and dispatches of the Vulkan op-stream replay: the strong vk_exec_op_draw behind vk_exec.c's weak hook.
-// Runs on the submitting thread under vk_sync_submit's lock; nothing here locks. Draw replay: see README, "Draw replay".
+// Runs on the submitting thread under vk_sync_submit's lock; nothing here locks. Draw replay: see docs/how-it-works.md, "Draw replay".
 // Provenance: the op semantics (bind ops, program and slot conventions, draw and dispatch flow, vertex streams with a
 // zeroed buffer for unbound ones) follow MacNativeGames games/totk/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m:7409-7460,
 // 9365-9488, 9489-9921, 10013-10079 @ b75be8cf (MIT, Copyright (c) 2026 jhaizhou); the uniform-buffer spans, texture and
@@ -1333,7 +1333,7 @@ static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *
 // ---- feedback loops (vk.h VkCtx.feedback)
 // A draw whose fragment shader samples an attachment the open pass wrote needs a barrier: VK_FEEDBACK_LAYOUT learns the
 // image and uses the feedback-loop layout from then on; VK_FEEDBACK_RESTART restarts the pass behind a full barrier.
-// Feedback loops: see README, "Draw replay".
+// Feedback loops: see docs/how-it-works.md, "Draw replay".
 static int in_fbl(const VkExec *ex, VkImage img) {
     for (int i = 0; i < ex->nfbl; i++)
         if (ex->fbl_img[i] == img) return 1;

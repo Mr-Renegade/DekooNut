@@ -99,7 +99,7 @@ static volatile uint64_t oq_written_fence;     // completion thread: samples-pas
 
 static unsigned pending_slot(uint64_t addr) { return (unsigned)(((addr >> 4) * 0x9E3779B97F4A7C15ull) >> 48); }
 
-// ---- occlusion counts (samples passed): see README, "Transfers, counters and conditional rendering".
+// ---- occlusion counts (samples passed): see docs/how-it-works.md, "Transfers, counters and conditional rendering".
 // After a SAMPLES_PASSED reset the first draw of a pass begins an occlusion query that ends with the pass or at the
 // next report or reset. The queries closed since the last report or reset form a segment, handed to the completion
 // thread with that report or reset, which sums it in submit order. Slots come from one ring that the completion thread

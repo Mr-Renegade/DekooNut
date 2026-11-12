@@ -1,6 +1,6 @@
 // The Vulkan graphics back end: gfx_vulkan_backend wires the memory and texture layer (vk_memory.c, vk_texture.c),
 // submission and fences (vk_sync.c) and the present. Every entry starts the device on first use.
-// Present: see README, "Present thread".
+// Present: see docs/how-it-works.md, "Present thread".
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

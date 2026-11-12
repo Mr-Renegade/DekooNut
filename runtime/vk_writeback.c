@@ -18,7 +18,7 @@
 
 // ---- write-back must not land on CPU data
 // A small range the CPU also writes stays out of write-back: a stale mirror copy would roll back newer CPU data.
-// VRAM mirror and write-back: see README, "VRAM mirror and write-back".
+// VRAM mirror and write-back: see docs/how-it-works.md, "VRAM mirror and write-back".
 enum { WB_ENTS = 1 << 15, WB_PER_SUB = 1024 };
 #define WB_RING (512ull << 20)   // the largest ring; ranges up to WB_RING / 16 are watched
 // The host ring the rule's copies go through (pinned host memory, allocated whole at first use, read on the completion thread).

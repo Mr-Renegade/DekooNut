@@ -139,7 +139,7 @@ static int view_format(const tex_t *t, const view_t *v, int blocks, VkFormat *ou
     return 1;
 }
 
-// ---- 3D BC render targets: see README, "3D BC render targets".
+// ---- 3D BC render targets: see docs/how-it-works.md, "3D BC render targets".
 // Draws through an uncompressed block view of a 3D BC image go to a per-level stand-in, copied back into the level at pass end.
 typedef struct { VkImage bc, img; VmaAllocation alloc; VkFormat fmt; uint32_t level, w, h, d; } BcStandIn;
 #define BC_STANDINS 64   // one per level drawn: 6 volumes of up to 7 levels
@@ -774,7 +774,7 @@ static void set_rt(VkExec *ex, const p_set_rt *r) {
     ex->rt_resolved = 0;
 }
 
-// ---- command buffer parts: see README, "Command buffer parts".
+// ---- command buffer parts: see docs/how-it-works.md, "Command buffer parts".
 // A submission is split into parts after 64 draws and dispatches and at least 1000 us of replay; a split may end a render pass
 // (reopened at the next draw). Only the last part signals the fence. Bindings and dynamic state are lost at a split.
 enum { split_n = 64 };
@@ -1049,7 +1049,7 @@ static int walk(VkExec *ex, WalkCur *wc) {
     }
 }
 
-// ---- The queues as coroutines: see README, "Queue coroutines".
+// ---- The queues as coroutines: see docs/how-it-works.md, "Queue coroutines".
 // Each queue keeps its pending submissions, its place (WalkCur) and its own NVN state; a stream runs until a wait is not met.
 // What cannot run stays queued until the next submission, the CPU's signal (vk_exec_co_kick) or the present (waits ignored).
 enum { CO_MAX = 8, CO_SUBS = 32 };

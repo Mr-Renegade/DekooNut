@@ -655,7 +655,7 @@ int vk_mem_gmem_info(VkBuffer *buffer, VkDeviceSize *offset, VkDeviceSize *size)
     return 1;
 }
 
-// ---- guest page table (translator patch 0032): see README, "Shader access to guest memory".
+// ---- guest page table (translator patch 0032): see docs/how-it-works.md, "Shader access to guest memory".
 // A shader loads table[guest address >> 12] (a device page number), then accesses entry << 12 plus the page offset.
 // One 32-bit entry per 4 KiB page of 36 bits of guest address; bit 39 (virtual pools) folds to the table's unused
 // bottom, as the translator masks it away. The table is aligned to its size: the shader ORs, it does not add.

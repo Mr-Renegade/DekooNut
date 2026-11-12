@@ -1,5 +1,5 @@
 // Runtime repair of a translator gap: a graphics stage's global load through a pointer read from memory matches no bound
-// buffer, so its helper is `return 0`. The rewrite gives such a helper the body patch 0033 emits (see README, "Global
+// buffer, so its helper is `return 0`. The rewrite gives such a helper the body patch 0033 emits (see docs/how-it-works.md, "Global
 // loads in graphics stages"). Only modules with a `return 0` helper of two int pointers change, so other pipelines
 // stay cached. Limit: the helper takes 32-bit reads (every module seen reads floats; not proven for all).
 #pragma once

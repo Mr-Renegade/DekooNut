@@ -1,5 +1,5 @@
 // VRAM headroom: the next VMA block of a memory type is allocated on a background thread, because a vkAllocateMemory on the
-// render thread stalls it for milliseconds. VRAM headroom: see README, "VRAM headroom".
+// render thread stalls it for milliseconds. VRAM headroom: see docs/how-it-works.md, "VRAM headroom".
 // Under VRAM pressure (use plus two blocks past 85% of the budget) no headroom is kept.
 
 #include "host.h"

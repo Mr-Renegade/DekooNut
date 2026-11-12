@@ -1,5 +1,5 @@
 // Game resolution: the size the game composes its frame in (canvas, UI, swapchain) and the size of its 3D scene, above the
-// shipped 1920x1080 and 1600x900. Settings OOT_OUTPUT_RES and OOT_RENDER_SCALE; see README, "Render resolution".
+// shipped 1920x1080 and 1600x900. Settings OOT_OUTPUT_RES and OOT_RENDER_SCALE; see docs/how-it-works.md, "Render resolution".
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>

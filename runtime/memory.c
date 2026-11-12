@@ -2,7 +2,7 @@
 // MacNativeGames contributors), and LAS Recomp runtime/main.c and platform/windows.c @ da35b83 (MIT, Copyright (c)
 // 2026 Peiikai).
 // Guest address space and the memory SVCs: heap, module data permissions, stack moves, QueryMemory, alias-region physical
-// memory, GetInfo memory ids and the kernel-region allocator. Address space and frozen regions: see README, "Guest memory".
+// memory, GetInfo memory ids and the kernel-region allocator. Address space and frozen regions: see docs/how-it-works.md, "Guest memory".
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

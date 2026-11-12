@@ -1,5 +1,5 @@
 // Flight recorder (OOT_FLIGHT=1): a ring of the last 600 presents, a record and a 320x180 thumbnail each, dumped
-// to <exe dir>/../flight/. Flight recorder: see README, "Flight recorder".
+// to <exe dir>/../flight/. Flight recorder: see docs/how-it-works.md, "Flight recorder".
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

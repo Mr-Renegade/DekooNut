@@ -1,6 +1,6 @@
 #version 450
 // DLSS's BiasCurrentColor mask (1 = trust the current colour), the larger of two tests (params.mode bits 0 and 1) that find
-// what moves on its own, since the motion vectors are the camera's only. DLSS mask: see README, "DLSS bias mask".
+// what moves on its own, since the motion vectors are the camera's only. DLSS mask: see docs/how-it-works.md, "DLSS bias mask".
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(binding = 0) uniform sampler2D scene_depth;
 layout(binding = 1, r8) uniform writeonly image2D mask;

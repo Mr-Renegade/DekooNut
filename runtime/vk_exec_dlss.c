@@ -311,7 +311,7 @@ void upscale_standin(VkExec *ex) {
     if (!told++) rt_log("tensor: upscale stand-in blits %ux%u to %ux%u (formats %d -> %d, usage %#x -> %#x)", up_src.w, up_src.h, w, h, (int)up_src.format, (int)dst_format, (unsigned)up_src.usage, (unsigned)dst_usage);
 }
 
-// ---- DLSS Super Resolution in place of the stand-in (vk_dlss.c); see README, "DLSS".
+// ---- DLSS Super Resolution in place of the stand-in (vk_dlss.c); see docs/how-it-works.md, "DLSS".
 // The game has no motion vectors or jitter: motion comes from the scene depth reprojected through this and the previous
 // camera (vertex cbuf 3); the colour is the game's sqrt-coded LDR input. Anything unexpected leaves the stand-in, with the
 // reason logged when it changes and every 120th repeat.

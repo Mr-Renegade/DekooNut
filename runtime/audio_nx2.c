@@ -1,7 +1,7 @@
 // Switch 2 audio device manager, "auddmg:u": the nn::audio virtual output devices (nn::audio::ListVirtualOutputDevices and
 // friends) the SDK reaches before it opens an output stream. Reference for the wire format: Lichii/Eden
 // src/core/hle/service/audio/nx2_audio_device_manager.h (GPL-3.0-or-later, read for the command layout only).
-// Audio device manager: see README, "Audio device manager".
+// Audio device manager: see docs/how-it-works.md, "Audio device manager".
 #include <stdint.h>
 #include <string.h>
 

@@ -3,7 +3,7 @@
 // movie::Decoder for VP9 on the host with libvpx (BSD-3-Clause, linked statically), replacing the SDK's NVDEC-based
 // decoder; the game's own demuxer (movie::Extractor) still runs as guest code. HOST_OVERRIDE entries replace the
 // decoder's vtable slots; a VP9 buffer-mode decoder (type 3, mode 1) is a host object (+0 the library's vtable, +8 the host
-// Movie), any other decoder runs the original code. Movie decoder: see README, "Movie decoder".
+// Movie), any other decoder runs the original code. Movie decoder: see docs/how-it-works.md, "Movie decoder".
 #include <emmintrin.h>
 #include <stdint.h>
 #include <stdlib.h>

@@ -1,6 +1,6 @@
 // SDL3 back end of the keyboard and the mouse (input_wsys.h): scancodes to the key ids of input_map.h, the mouse camera's
 // relative motion and the cursor capture. Events come from the window thread; any thread reads the state.
-// Cursor capture: see README, "Cursor capture".
+// Cursor capture: see docs/how-it-works.md, "Cursor capture".
 #include <string.h>
 
 #include <SDL3/SDL.h>

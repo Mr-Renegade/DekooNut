@@ -1,6 +1,6 @@
 // nn::codec video decoding on the host for the game's movies: libvpx (VP8, VP9) and dav1d (AV1), every codec handing
 // its pictures over as 8-bit NV12. libvpx is BSD-3-Clause, dav1d BSD-2-Clause. The decoder calls are host functions;
-// the demuxer (nn::movie::MediaExtractor) stays guest code. Player contract: see README, "Movie decoder".
+// the demuxer (nn::movie::MediaExtractor) stays guest code. Player contract: see docs/how-it-works.md, "Movie decoder".
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>

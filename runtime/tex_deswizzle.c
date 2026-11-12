@@ -1,7 +1,7 @@
 // Tegra X1 block-linear <-> linear copies.
 // Ported from MacNativeGames games/totk/third_party/d2r_gfx/gfx/tex/nvn_deswizzle.c @ b75be8cf (MIT, Copyright (c) 2026 jhaizhou); comments translated, the copy loop split out as tex_bl_copy.
 //
-// Layout: see README, "Block-linear textures". Level and layer start offsets and the block height and depth of a level
+// Layout: see docs/how-it-works.md, "Block-linear textures". Level and layer start offsets and the block height and depth of a level
 // come from nvn_tex.c; this file only does the addressing inside a level and the copy.
 #include "tex.h"
 #include <stdlib.h>

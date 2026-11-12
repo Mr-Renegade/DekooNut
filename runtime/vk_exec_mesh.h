@@ -232,7 +232,7 @@ static int mesh_compile_poll(MeshModule *m) {
 
 // Handle program: a mesh stage texture whose handle is read from a storage buffer (tools/mesh exports an "H" line) is
 // bound per draw from the handle its program gives, evaluated over the stage's constant banks and storage buffers in
-// guest memory: see README, "Mesh handle programs". It goes into texture slot MESH_HP_SLOT0 + n, past the 32 bank 2 names.
+// guest memory: see docs/how-it-works.md, "Mesh handle programs". It goes into texture slot MESH_HP_SLOT0 + n, past the 32 bank 2 names.
 #define MESH_HP_SLOT0 96
 #define MESH_HP_SLOTS 32
 static int mesh_hp_on(void) {
@@ -635,7 +635,7 @@ static void mesh_pipeline_note(const VkExec *ex, const char *what, const MeshMod
            (unsigned long long)mesh->key, (unsigned long long)(task ? task->key : 0), (unsigned long long)fragment);
 }
 
-// Mesh pipelines are built on two builder threads, not in the replay: see README, "Mesh pipeline builds".
+// Mesh pipelines are built on two builder threads, not in the replay: see docs/how-it-works.md, "Mesh pipeline builds".
 typedef struct MeshJob {
     struct MeshJob *next;
     MeshPipeline *p;
@@ -741,7 +741,7 @@ static int mesh_async_queue(MeshPipeline *p, const VkPipeState *state, VkShaderM
     return 1;
 }
 
-// ---- mesh pipeline notes: <mesh cache>/mesh-keys.bin, see README, "Mesh pipeline builds"
+// ---- mesh pipeline notes: <mesh cache>/mesh-keys.bin, see docs/how-it-works.md, "Mesh pipeline builds"
 #define MESH_NOTES_VERSION 1
 typedef struct {
     uint64_t mesh, mesh_native, task, task_native;
@@ -909,7 +909,7 @@ static MeshPipeline *mesh_pipeline_get(const VkExec *ex, const VkPipeState *stat
 }
 
 // indirect: the guest record {count, first}; its count is copied on the GPU into a {count, 1, 1} record (a CPU read
-// would wait for the GPU at every call). mesh_pair: see README, "Mesh depth and colour pass pairing".
+// would wait for the GPU at every call). mesh_pair: see docs/how-it-works.md, "Mesh depth and colour pass pairing".
 static struct { uint64_t addr, frame; } MP[256];
 static uint64_t mp_noted, mp_dropped;
 // The per-object block: the mesh stage's c4 when it is small (0x100), else its c5 (c4 is the 0x4240-byte block every

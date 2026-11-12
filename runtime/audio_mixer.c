@@ -5,7 +5,7 @@
 //
 // Per 5 ms frame the render thread (audren.c, renderer lock held) decodes, resamples, filters and mixes every started voice, runs
 // the mix effects and writes the sink's stereo mix into a single-producer single-consumer ring that the SDL audio thread drains
-// without a lock (an empty ring plays silence). OOT_AUDIO=none mixes without a device. Audio mixer: see README, "Audio mixer".
+// without a lock (an empty ring plays silence). OOT_AUDIO=none mixes without a device. Audio mixer: see docs/how-it-works.md, "Audio mixer".
 #include <math.h>
 #include <stdatomic.h>
 #include <stdio.h>

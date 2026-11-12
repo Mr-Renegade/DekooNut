@@ -2,7 +2,7 @@
 // contributors).
 // Six-axis sensor states (nn::hid::SixAxisSensorState) from gyro and accelerometer samples. Input: acceleration in G including
 // gravity (lying face up z = -1 G) and rate in rad/s, in the controller frame (x right, y toward the top edge, z out of the
-// face). The feeding thread writes, guest threads read, both under the instance's SRW lock. Six-axis fusion: see README, "Six-axis fusion".
+// face). The feeding thread writes, guest threads read, both under the instance's SRW lock. Six-axis fusion: see docs/how-it-works.md, "Six-axis fusion".
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>

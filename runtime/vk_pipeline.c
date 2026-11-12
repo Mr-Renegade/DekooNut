@@ -1,5 +1,5 @@
 // Graphics and compute pipelines, descriptor layouts and their caches for the Vulkan replay.
-// Pipelines and descriptor bindings: see README, "Pipelines and descriptor bindings".
+// Pipelines and descriptor bindings: see docs/how-it-works.md, "Pipelines and descriptor bindings".
 //
 // Provenance: the NVN -> Vulkan enum mappings (blend factors and equations, compare functions, stencil ops), the vertex
 // format table with its 3-component fallback and the pipeline cache file handling follow LAS Recomp
@@ -1314,7 +1314,7 @@ VkPipeline vk_pipeline_mesh_create(const VkPipeState *s, VkPipelineLayout layout
     return create_graphics_with_mesh(s, &key, &binding_layout, fragment_binding_offset, mesh, task);
 }
 
-// ---- graphics pipeline library (vk_caps.gpl): see README, "Graphics pipeline libraries"
+// ---- graphics pipeline library (vk_caps.gpl): see docs/how-it-works.md, "Graphics pipeline libraries"
 // Background build signalling, both with P.lock: work_cv wakes the pipeline workers, done_cv wakes threads waiting for a
 // pipeline or a stage library.
 static PlatCond work_cv = PLAT_COND_INIT, done_cv = PLAT_COND_INIT;
@@ -1652,7 +1652,7 @@ static VkPipeline gpl_link(const VkPipeState *s, const GKey *k, const Layout *lc
     return pipe;
 }
 
-// ---- background graphics pipeline builds (vk_pipeline_async_enable): see README, "Background pipeline builds"
+// ---- background graphics pipeline builds (vk_pipeline_async_enable): see docs/how-it-works.md, "Background pipeline builds"
 // Workers call vkCreateGraphicsPipelines without P.lock: P.cache is not externally synchronised, so the driver
 // synchronises it (vk_pipeline_save's vkGetPipelineCacheData included).
 // Compute pipelines stay synchronous: a skipped dispatch can change what the game computes.
@@ -1682,7 +1682,7 @@ static struct {
     PlatCond idle;           // with P.lock: no job queued or running
 } A = {.idle = PLAT_COND_INIT};
 
-// ---- pipeline keys (pipeline-keys.bin next to the pipeline cache): see README, "Pipeline key file and prewarm"
+// ---- pipeline keys (pipeline-keys.bin next to the pipeline cache): see docs/how-it-works.md, "Pipeline key file and prewarm"
 // Bump KEYS_VERSION when VkPipeState or the record changes meaning without changing size.
 #define KEYS_VERSION 3
 typedef struct { char magic[8]; uint32_t version, rec_size; } KeysHeader;
@@ -2388,7 +2388,7 @@ static Layout *compute_layout(const GfxShader *cs, Bindings *B, const char **why
     return l;
 }
 
-// ---- stage library prebuild: see README, "Stage library prebuild"
+// ---- stage library prebuild: see docs/how-it-works.md, "Stage library prebuild"
 #define LB_MAX_THREADS 16
 
 static struct {

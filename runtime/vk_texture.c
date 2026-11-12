@@ -615,7 +615,7 @@ static void sweep_pressure(void) {   // tex_lock held
 
 static uint64_t n_cap_drops, cap_drop_bytes, n_cap_stuck;
 
-// Released texture cache: see README, "Released texture cache". Released GPU-only render targets are freed by evidence: a
+// Released texture cache: see docs/how-it-works.md, "Released texture cache". Released GPU-only render targets are freed by evidence: a
 // released image is dead when another GPU-written image was written over its storage after its last use (same address, or
 // starting elsewhere and covering an eighth of it or more); a dead one goes after REL_DEAD_UNUSED (3) unused frames, any
 // other GPU-only one after REL_KEEP_FRAMES (3600; 600 above 90% of the budget). Mirrored entries are never touched here.
@@ -1347,7 +1347,7 @@ static Tex *slot_resolve(TexSlot *s, view_t *view, int *has_view) {
         // whether or not the slot's own entry still exists, only a live entry of the descriptor's shape (size, depth, layers,
         // samples, storage size) whose format a view of the slot's format can read (never depth <-> colour); otherwise the slot
         // gets its own image (entry_of: a mirrored one from its storage, a GPU-only one zeroed). Following a transient of
-        // another size would flip the slot between images from draw to draw. Slot resolution: see README, "Slot resolution".
+        // another size would flip the slot between images from draw to draw. Slot resolution: see docs/how-it-works.md, "Slot resolution".
         static int keep_own_said;
         if (!keep_own_said) {
             keep_own_said = 1;
@@ -2015,7 +2015,7 @@ void vk_texture_write_back_small(uint64_t fence) {
 }
 
 // ---------------------------------------------------------------- tex_prestage
-// tex_prestage: see README, "Texture write-back". A small GPU target is written back to its storage when the CPU waits for
+// tex_prestage: see docs/how-it-works.md, "Texture write-back". A small GPU target is written back to its storage when the CPU waits for
 // its fence or reads it; image_texels does that behind the upload batch with a GPU wait under the texture and upload locks.
 // With tex_prestage (262144 bytes) the end of each submission copies such targets into a host-visible ring; a write-back of
 // the same render whose fence is done reads the ring instead: same bytes, no GPU wait.

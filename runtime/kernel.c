@@ -4,7 +4,7 @@
 // virtual cores from MacNativeGames threads.c @ 33e8fa8 (MIT, as above).
 // Threads, synchronization, virtual cores and fibers of the Horizon kernel. One guest thread is one host thread with a 256 MiB
 // reserved stack and its own Cpu; every wait hangs on one global lock G with one condition variable per thread.
-// Guest threads and virtual cores: see README, "Guest threads and virtual cores".
+// Guest threads and virtual cores: see docs/how-it-works.md, "Guest threads and virtual cores".
 #include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -275,7 +275,7 @@ static int cores_enabled(void) {
 
 static int core_allowed(const RtThread *t, int c) { return (int)((t->mask >> c) & 1); }
 
-// ---- asynchronous preemption: see README, "Asynchronous preemption".
+// ---- asynchronous preemption: see docs/how-it-works.md, "Asynchronous preemption".
 // Preemption disable: the SDK's spin locks count TLR+0x100 (disable_count) and the switch is deferred to SVC 0x36 when
 // TLR+0x102 (interrupt_flag) is set; such an owner is never preempted.
 #define AP_FIRST_NS 250000ull   // the waiter spins this long before the first interruption (most waits end sooner)

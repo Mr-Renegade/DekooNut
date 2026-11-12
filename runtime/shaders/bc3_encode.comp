@@ -1,6 +1,6 @@
 // RGBA8 texels to BC3 blocks, one invocation per 4x4 block: the second pass of the ASTC decode (vk_astc.c). Texels past
 // the right or bottom edge repeat the last column or row. Compiled to runtime/bc3_encode_spv.h by tools/build_shaders.py.
-// BC3 encoder: see README, "ASTC to BC3".
+// BC3 encoder: see docs/how-it-works.md, "ASTC to BC3".
 #version 450
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;

@@ -1,5 +1,5 @@
 // Switch 2 sound mixer service "audsmx:u" (sysmix): the PCM output streams nn::audio::OutputStream uses. The wire
-// format is the console's. Commands and the shared buffer layout: see README, "Sysmix audio service".
+// format is the console's. Commands and the shared buffer layout: see docs/how-it-works.md, "Sysmix audio service".
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>

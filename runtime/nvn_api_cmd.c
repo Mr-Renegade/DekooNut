@@ -5,7 +5,7 @@
 // lines 647-1062, 1261-1286, 1486-1760 and 1975-1990, and the *Deferred and memory-callback entry points of
 // totk_nvn_ext.c in the same directory. Metal, mach, the translation thread, Apple diagnostics, the per-frame
 // statistics and the long-session sweeps (copy marks in control memory, texture pin sweep) dropped.
-// Command recording and recording copies: see README, "NVN command recording".
+// Command recording and recording copies: see docs/how-it-works.md, "NVN command recording".
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>

@@ -4,7 +4,7 @@
 //
 // Input: romfs.bin (rt_config()->romfs) and romfs-index.bin next to oot.exe; fs_init checks the index and the image size.
 // Reads are positional (plat_file_pread), so threads read the image in parallel without a lock.
-// Overlays replace or add files: see README, "RomFS overlays".
+// Overlays replace or add files: see docs/how-it-works.md, "RomFS overlays".
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
