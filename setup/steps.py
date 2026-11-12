@@ -518,7 +518,8 @@ class Game(Step):
     @staticmethod
     def system_args():
         tc = ROOT / 'toolchain'
-        return ['--toolchain', tc / 'llvm-mingw', '--deps', tc / 'deps-mingw'] if WIN else ['--dlss-sdk', fetch.DLSS_DIR]
+        return ['--toolchain', tc / 'llvm-mingw', '--deps', tc / 'deps-mingw', '--ninja', tc / 'bin' / 'ninja.exe'] \
+            if WIN else ['--dlss-sdk', fetch.DLSS_DIR]
 
 
 class Shaders(Step):

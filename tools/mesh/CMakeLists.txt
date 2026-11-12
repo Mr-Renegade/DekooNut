@@ -33,7 +33,9 @@ foreach(patch_file ${MESH_PATCHES})
       list(APPEND RECOMP_SRC "${PATCHED_SOURCE}/${rel}")
     endif()
   endforeach()
-  execute_process(COMMAND patch -p1 --no-backup-if-mismatch -i "${patch_file}" WORKING_DIRECTORY "${PATCHED_SOURCE}" RESULT_VARIABLE patch_rc)
+  # git apply, not patch: git is there wherever the sources were fetched (Windows has no patch program). It works on
+  # plain files; --ignore-whitespace takes a checkout with other line ends.
+  execute_process(COMMAND git apply -p1 --ignore-whitespace "${patch_file}" WORKING_DIRECTORY "${PATCHED_SOURCE}" RESULT_VARIABLE patch_rc)
   if(NOT patch_rc EQUAL 0)
     message(FATAL_ERROR "${patch_file} does not apply to ${LICHII_SOURCE}")
   endif()

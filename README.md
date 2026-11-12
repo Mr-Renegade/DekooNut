@@ -9,7 +9,7 @@ system services, files, audio, input, and the graphics API, which is recorded an
 Everything happens on your PC, from your own copy of the game.
 
 > [!IMPORTANT]
-> This repository **does not contain the game, any game file, keys or a built executable**, and it does not explain
+> This repository and its releases **do not contain the game, any game file, keys or a built game**, and do not explain
 > how to get them. **You need your own legally obtained copy of the game.** Everything the build creates (the
 > generated code, the `oot` program, the shader caches, your saves) comes from your copy and stays on your PC. Never
 > share those files, and never add them here: `tools/check_content.py`, which also runs as the pre-commit hook,
@@ -36,6 +36,9 @@ new: it compiles and its set-up's first steps run there, but it has not been pla
 - An internet connection for the set-up: it fetches the build tools.
 
 ## Install and play
+
+Download `DekooNut-Setup-x86_64.AppImage` from the [releases](https://github.com/Mr-Renegade/DekooNut/releases), make
+it executable and start it (it keeps its files in `~/.local/share/dekoonut`), or use a clone:
 
     git clone https://github.com/Mr-Renegade/DekooNut.git
     cd DekooNut

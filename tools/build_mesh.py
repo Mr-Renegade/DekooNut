@@ -26,7 +26,8 @@ def run(*args):
 def source(name, url, commit):
     directory = ROOT / "refs" / name
     if not directory.exists():
-        run("git", "clone", "--filter=blob:none", "--no-checkout", url, directory)
+        # The same bytes on every system: the patches of tools/mesh are made against them.
+        run("git", "clone", "-c", "core.autocrlf=false", "--filter=blob:none", "--no-checkout", url, directory)
         if name == "lichii-mesh":
             run("git", "-C", directory, "sparse-checkout", "set", "src/common", "src/shader_recompiler")
         run("git", "-C", directory, "fetch", "--depth", "1", "origin", commit)

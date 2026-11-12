@@ -5,6 +5,7 @@ The window is setup/gui/main.cpp with Dear ImGui over SDL3, compiled into build/
 SDL3 it cannot exist yet: then the terminal (or a desktop dialog) says what to install.
 """
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -40,7 +41,7 @@ def say(text, command=''):
 
 def build(say=print):
     """The window's program, built when a source is newer. None (after saying why) when it cannot be built."""
-    inputs = SOURCES + list(HERE.glob('imgui/*.h')) + list(IMGUI.glob('*.h'))
+    inputs = SOURCES + list(HERE.glob('imgui/*.h')) + list(IMGUI.glob('*.h')) + [Path(__file__)]   # its flags are here
     if EXE.is_file() and EXE.stat().st_mtime >= max(p.stat().st_mtime for p in inputs):
         return EXE
     env = host.tool_env()
@@ -55,7 +56,8 @@ def build(say=print):
                 ', '.join(what for what, _ in need) + '.\nInstall them, then start setup again:',
                 host.install_command(host.missing_packages()))
             return None
-        flags = ([], ['-lSDL3', '-lm'] + (['-fuse-ld=lld'] if host.which('ld.lld', env) else []))
+        # $ORIGIN: an SDL3 library beside the program is taken first (the one-file release puts one there).
+        flags = ([], ['-lSDL3', '-lm', '-Wl,-rpath,$ORIGIN'] + (['-fuse-ld=lld'] if host.which('ld.lld', env) else []))
     OUT.mkdir(parents=True, exist_ok=True)
     print('building the setup window ...', file=sys.stderr)
     clang = host.which('clang++', host.tool_env())
@@ -66,8 +68,9 @@ def build(say=print):
         objects.append(obj)
         if obj.is_file() and obj.stat().st_mtime >= max(p.stat().st_mtime for p in [src] + inputs[len(SOURCES):]):
             continue
-        jobs.append(subprocess.Popen([clang, '-std=c++17', '-O2', '-c', str(src), '-o', str(obj), '-I', str(IMGUI),
-                                      '-I', str(HERE), *flags[0]], env=host.tool_env()))
+        # -ffile-prefix-map: no path of this PC in the program (asserts carry their file's name).
+        jobs.append(subprocess.Popen([clang, '-std=c++17', '-O2', f'-ffile-prefix-map={ROOT}=.', '-c', str(src), '-o',
+                                      str(obj), '-I', str(IMGUI), '-I', str(HERE), *flags[0]], env=host.tool_env()))
     if any(job.wait() for job in jobs):
         say('The setup window could not be compiled; the lines above say why.')
         return None

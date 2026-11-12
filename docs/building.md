@@ -76,6 +76,12 @@ The full steps from your own copy of the game to a running build. The short form
   libraries (`tools/win_deps.py`) into `toolchain\`, so nothing has to be installed first. On a Windows 11 PC the
   check, the tools step, the icon, the game program step and the window's build have run; the steps after them
   (game data, generate, translator, mesh compiler, game, shaders) have not yet. A Windows build has no DLSS for now.
+- Setup as one file, for a PC without git: `python3 tools/make_appimage.py` writes
+  `build/release/DekooNut-Setup-x86_64.AppImage` (this checkout's files, the window already built, its SDL3
+  library; it unpacks into `~/.local/share/dekoonut/src`, or `DEKOONUT_HOME`, and runs `setup.sh` there), and
+  `python3.14 tools/make_setup_exe.py --cross <llvm-mingw>` writes `build/release/DekooNut Setup.exe` (the same for
+  Windows; it unpacks into a folder `DekooNut` beside itself and runs `setup.bat`). Neither holds anything of the
+  game or any build tool: setup fetches those as from a clone.
 - Tests without game files: `python3 tests/setup_test.py` (the bookkeeping), and `tests/setup_fake.py`, a stand-in
   backend that plays a build for the window (`build/setup/gui/dekoonut-setup --root . --backend "python3
   tests/setup_fake.py"`).
