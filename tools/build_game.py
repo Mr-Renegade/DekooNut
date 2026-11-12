@@ -71,7 +71,9 @@ if WIN:
     # to Windows 7, which hides the per-monitor DPI functions gfx_window_win.c calls.
     RT_FLAGS.append('-D_WIN32_WINNT=0x0A00')
     # -Xlinker passes the map path as one argument; -Wl, would split it at any comma in the build dir path
-    LINK_FLAGS = ['-fuse-ld=lld', '-Wl,--stack,16777216', '-Xlinker', '"--Map=$builddir/oot.map"']
+    # -mwindows: a windowed program. As a console program oot.exe got a console window of its own at every start
+    # from the Start menu (platform/win32.c plat_output_init gives its output a place).
+    LINK_FLAGS = ['-fuse-ld=lld', '-mwindows', '-Wl,--stack,16777216', '-Xlinker', '"--Map=$builddir/oot.map"']
     LINK_LIBS = ['-lpsapi', '-lbcrypt', '-lvulkan-1', '-luser32', '-lgdi32', '-ldwmapi', '-limm32', '-lwinmm', '-lSDL3', '-lopus', '-l:libvpx.a', '-ldav1d', '-l:libzstd.a', '-l:libstdc++.a', '-l:libwinpthread.a']   # Vulkan back end; libvpx static (movies), dav1d (AV1 cutscenes), zstd static (resolution.c)
     VMA_INCLUDE = UCRT.parent / 'include' / 'vma'   # vk_mem_alloc.h; MSYS2 package vulkan-memory-allocator
 else:

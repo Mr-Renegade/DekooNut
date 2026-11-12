@@ -255,6 +255,22 @@ uint64_t plat_counter_hz(void) { return qpc_freq(); }
 // The default timer tick is 15.6 ms; a 1 ms wait would cost a full tick.
 void plat_timer_1ms(void) { timeBeginPeriod(1); }
 
+// oot.exe is a windowed program (tools/build_game.py links it with -mwindows): started from the Start menu it opens no
+// console window. Its output still has somewhere to go. A file or a pipe it was given (setup's runs, a redirect) is
+// left as it is; started from a terminal it writes to that terminal; otherwise to nowhere, and logs\oot.log has the
+// log. plat_stderr_path asks the standard handle, which this leaves alone: a terminal is not a file there either way.
+void plat_output_init(void) {
+    static const DWORD ids[2] = {STD_OUTPUT_HANDLE, STD_ERROR_HANDLE};
+    FILE *streams[2] = {stdout, stderr};
+    int attached = -1;
+    for (int i = 0; i < 2; i++) {
+        HANDLE h = GetStdHandle(ids[i]);
+        if (h && h != INVALID_HANDLE_VALUE && GetFileType(h) != FILE_TYPE_UNKNOWN) continue;
+        if (attached < 0) attached = AttachConsole(ATTACH_PARENT_PROCESS) != 0;
+        if (!freopen(attached ? "CONOUT$" : "NUL", "w", streams[i])) freopen("NUL", "w", streams[i]);
+    }
+}
+
 static PlatScale qpc_ns;   // set before main, so no thread reads it half written
 
 __attribute__((constructor)) static void qpc_ns_init(void) { qpc_ns = plat_scale(1000000000u, qpc_freq()); }
