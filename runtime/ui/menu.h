@@ -52,6 +52,7 @@ void gfx_window_apply_settings(void);     // fullscreen or window size changed: 
 void gfx_window_request_close(void);      // as the window's close button: the process ends
 int gfx_window_monitor_size(int *w, int *h);   // pixels of the monitor the window is on; 0 when unknown
 double gfx_window_refresh_hz(void);            // its refresh rate (fps limit "display"); 0 when unknown
+double gfx_shown_fps(void);                    // gfx_shown.c: frames per second the display showed; 0 when unknown
 unsigned gfx_window_dpi(void);                 // the window's DPI (96 at 100% display scale); any thread
 // The present mode the swapchain got, as a present-mode name ("fifo" when mailbox is missing); "" before the first
 // swapchain. Any thread.
@@ -59,6 +60,8 @@ const char *gfx_window_present_mode(void);
 // 1 when this build and PC can run NVIDIA DLSS (vk_dlss.c: an NVIDIA card, the model library beside the program),
 // whatever the dlss setting says; the menu shows the setting only then. Set once the Vulkan device is up.
 int vk_dlss_available(void);
+int vk_frame_gen_available(void);   // vk_device.c: the driver can generate frames here
+int vk_frame_gen_on(void);          // and was asked to (the overlay names it)
 
 #ifdef __cplusplus
 }

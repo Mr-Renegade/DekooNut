@@ -261,6 +261,11 @@ static void open_window(void *arg) {
     }
     SDL_SyncWindow(g_win);
     input_sdl_window(g_win);
+    if (!strcmp(SDL_GetCurrentVideoDriver(), "wayland")) {   // the overlay's frame rate: what the compositor showed
+        SDL_PropertiesID p = SDL_GetWindowProperties(g_win);
+        gfx_shown_start(SDL_GetPointerProperty(p, SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, NULL),
+                        SDL_GetPointerProperty(p, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, NULL));
+    }
     open_ok = 1;
 }
 

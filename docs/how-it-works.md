@@ -1086,6 +1086,40 @@ the camera's only, so whatever moves on its own (actors, swaying trees) would le
   frame's colour around the pixel. Still detail stays inside the box and history of something moved falls outside it.
   Outside by `params.color_threshold` to 3x that ramps the mask from 0 to 1.
 
+### Frame generation
+
+`runtime/vk_device.c`. The `frame_gen` setting (`off`, `smooth_motion`; read at start) asks the driver for NVIDIA Smooth
+Motion: its present layer `VK_LAYER_NV_present` puts one generated frame between two of the game's, so the game's 60
+frames per second show as 120. The Vulkan loader turns the layer on by the variable `NVPRESENT_ENABLE_SMOOTH_MOTION`
+when the instance is made, so the game sets it just before (a value in the environment wins). Nothing else changes: the
+game presents its 60 frames as before and the layer works on the finished window image, HUD and menu included.
+- The menu row (Screen tab) is shown where the driver does it: Linux, the layer installed, a GeForce RTX 40 or newer.
+- The performance overlay names it in a line of its own, and its frame rate is the display's ("Shown frames" below):
+  120 with it, while the frame times beside it and the frame limit stay the game's.
+- It doubles what the game draws and does nothing for a game below its 60.
+
+Measured on an RTX 4080 SUPER at 3840x2160 on a 120 Hz display, Hyrule Field, driver 615.71:
+- A 120 fps screen recording holds 60 different pictures per second without it and 120 with it, in `mailbox` and in
+  `fifo`. The game stays at 60.0 fps.
+- A frame is on the display 12.6 ms after its present without it and 25.4 ms with it (the driver's answer to
+  `vkWaitForPresentKHR`, every 16th frame, `mailbox`): the controls answer about 13 ms later.
+- GPU load 74 % to 80 %, 142 W to 159 W, 0.7 GiB more video memory (the screen recorder running in both).
+- The hearts and the map stay still during camera pans (their pixels change as little as without it).
+
+### Shown frames
+
+`runtime/gfx_shown.c`. The overlay's frame rate is what the display showed, where that can be counted, so frames the
+driver generates are in it. On Wayland the compositor answers a feedback request (the presentation-time protocol) with
+the time the window's next content update was shown, or that it was dropped. The driver commits every frame, generated
+ones too, to the window's surface. A thread with an event queue of its own sends a request every 2 ms while the overlay
+is on, so one is waiting at each commit; requests that share a commit report the same time, and a new time is one more
+frame. The rate is taken over half a second of those times. `libwayland-client` is the copy the window system loaded
+(`dlopen`), with the two protocol interfaces written out in the file, so the build needs no header of it.
+Where there is no such feedback (X11, Windows) the overlay shows the game's own frame rate.
+
+Seen at 3840x2160 on a 120 Hz display against a 120 fps screen recording: 60 with frame generation off (60 different
+pictures per second in the recording), 120 with it on (120 in the recording).
+
 ### Render resolution
 
 `runtime/resolution.c` sets the size the game composes its frame in (its output: canvas, UI, swapchain) and the size of its

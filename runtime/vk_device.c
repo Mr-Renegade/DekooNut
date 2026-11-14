@@ -48,9 +48,43 @@ static void nvidia_cache_beside_exe(void) {
     plat_setenv("__GL_SHADER_DISK_CACHE_SKIP_CLEANUP", "1");
 }
 
+// Frame generation (the frame_gen setting): NVIDIA Smooth Motion is the driver's present layer, which the Vulkan loader
+// turns on by this variable when the instance is made. A value in the environment wins.
+#define NV_PRESENT_LAYER "VK_LAYER_NV_present"
+static int nv_present_layer;   // the driver ships the layer
+static int frame_gen_asked;    // the variable is set, by the setting or by the player
+
+static void frame_gen_env(void) {
+#ifndef _WIN32
+    uint32_t n = 0;
+    vkEnumerateInstanceLayerProperties(&n, NULL);
+    VkLayerProperties *lp = calloc(n ? n : 1, sizeof *lp);
+    vkEnumerateInstanceLayerProperties(&n, lp);
+    for (uint32_t i = 0; i < n; i++) if (!strcmp(lp[i].layerName, NV_PRESENT_LAYER)) nv_present_layer = 1;
+    free(lp);
+    char v[8];
+    if (plat_getenv("NVPRESENT_ENABLE_SMOOTH_MOTION", v, sizeof v)) { frame_gen_asked = nv_present_layer && !strcmp(v, "1"); return; }
+    if (strcmp(cfg_value("OOT_FRAME_GEN"), "smooth_motion")) return;
+    if (!nv_present_layer) { rt_log("vk: frame generation off: the driver has no " NV_PRESENT_LAYER); return; }
+    plat_setenv("NVPRESENT_ENABLE_SMOOTH_MOTION", "1");
+    frame_gen_asked = 1;
+    rt_log("vk: frame generation: NVIDIA Smooth Motion asked of the driver");
+#endif
+}
+
+// The menu shows the setting: the layer is there and the card is a GeForce RTX 40 or newer, the ones the driver does it on.
+int vk_frame_gen_available(void) {
+    const char *p = strstr(g_vk.props.deviceName, "GeForce RTX ");
+    return nv_present_layer && g_vk.props.vendorID == 0x10de && p && atoi(p + 12) >= 4000;
+}
+
+// The driver was asked for it on a card that does it (the overlay's line); the driver does not report more.
+int vk_frame_gen_on(void) { return frame_gen_asked && vk_frame_gen_available(); }
+
 static int create_instance(void) {
     mesa_cache_beside_exe();
     nvidia_cache_beside_exe();
+    frame_gen_env();
     const char *ext[8];
     uint32_t n_ext = (uint32_t)gfx_window_vk_extensions(ext, 7);
     vk_dlss_instance_ext(ext, &n_ext, 7);   // what NGX asks for (VK_KHR_get_physical_device_properties2)

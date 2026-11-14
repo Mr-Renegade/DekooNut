@@ -42,6 +42,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PRESENT] = "Presentation", [UI_MENU_PRESENT_DESC] = "How finished frames reach the screen.",
     [UI_MENU_PRESENT_MAILBOX] = "Mailbox", [UI_MENU_PRESENT_VSYNC] = "VSync", [UI_MENU_PRESENT_IMMEDIATE] = "Immediate",
     [UI_MENU_PRESENT_IN_USE] = "in use: %s",
+    [UI_MENU_FRAME_GEN] = "Frame generation",
+    [UI_MENU_FRAME_GEN_DESC] = "NVIDIA Smooth Motion: the graphics driver puts one generated frame between two of the "
+                               "game's, so 60 frames per second show as 120 on a display of 120 Hz or more. The "
+                               "controls answer a little later.",
+    [UI_MENU_FRAME_GEN_OFF] = "Off", [UI_MENU_FRAME_GEN_SMOOTH] = "NVIDIA Smooth Motion",
     [UI_MENU_GPU] = "Graphics card", [UI_MENU_GPU_DESC] = "The Vulkan device that draws the game.",
     [UI_MENU_GPU_AUTO] = "Automatic",
     [UI_MENU_PERF_OVERLAY] = "Performance overlay",
@@ -235,6 +240,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PRESENT_MAILBOX] = "Mailbox", [UI_MENU_PRESENT_VSYNC] = "Вертикальная синхронизация",
     [UI_MENU_PRESENT_IMMEDIATE] = "Без ожидания",
     [UI_MENU_PRESENT_IN_USE] = "сейчас: %s",
+    [UI_MENU_FRAME_GEN] = "Генерация кадров",
+    [UI_MENU_FRAME_GEN_DESC] = "NVIDIA Smooth Motion: драйвер видеокарты вставляет один сгенерированный кадр между двумя "
+                               "кадрами игры, поэтому 60 кадров в секунду выглядят как 120 на экране с частотой 120 Гц "
+                               "и выше. Управление откликается чуть позже.",
+    [UI_MENU_FRAME_GEN_OFF] = "Выкл.", [UI_MENU_FRAME_GEN_SMOOTH] = "NVIDIA Smooth Motion",
     [UI_MENU_GPU] = "Видеокарта", [UI_MENU_GPU_DESC] = "Устройство Vulkan, которое рисует игру.",
     [UI_MENU_GPU_AUTO] = "Автоматически",
     [UI_MENU_PERF_OVERLAY] = "Индикатор производительности",

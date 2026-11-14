@@ -15,6 +15,9 @@
 # device_profile = auto
 # Presentation mode: mailbox (default when the driver offers it, vsync otherwise), fifo (vsync) or immediate.
 # vk_present = mailbox
+# Frame generation: off, or smooth_motion (NVIDIA Smooth Motion: the driver puts one generated frame between two of the
+# game's, 60 frames per second show as 120). Linux, a GeForce RTX 40 or newer with a current driver. Read at start.
+# frame_gen = off
 # Window client area in screen pixels (640x360 to 7680x4320), and borderless fullscreen. Windows display scaling does
 # not apply: at 150% scale, 1920x1080 covers the area 1280x720 covers at 100%. F11 switches fullscreen and saves it
 # here. Changes while the game runs take effect at once.
