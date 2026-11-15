@@ -32,8 +32,6 @@ static int g_font_bad;
 #include "ui/binds_page.h"
 #include "ui/option_rows.h"
 
-enum { rt_game_version = 0 };
-
 extern "C" {
 #include "cfg.h"
 #include "input.h"
@@ -768,9 +766,8 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
                                         ImGuiWindowFlags_NoSavedSettings);
     ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", menu_text(UI_MENU_TITLE));
     // the port version and the game update, right-aligned on the title line: what a bug report needs first
-    char game[16], version[96];
-    snprintf(game, sizeof game, "%d.%d.%d", rt_game_version / 100, rt_game_version / 10 % 10, rt_game_version % 10);
-    snprintf(version, sizeof version, menu_text(UI_MENU_VERSION), rt_port_version, game);
+    char version[96];   // 1.1.1: the game update this port is made for (tools/data/expected-oot111.json)
+    snprintf(version, sizeof version, menu_text(UI_MENU_VERSION), rt_port_version, "1.1.1");
     ImGui::SameLine(ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - ImGui::CalcTextSize(version).x);
     ImGui::TextDisabled("%s", version);
 

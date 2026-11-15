@@ -286,7 +286,7 @@ static void window_main(void *arg) {
     // The window opens behind other windows without taking focus (it shows blank loading frames at first). The game
     // counts itself in focus until the first WM_ACTIVATEAPP, and keyboard input waits for the foreground (input_win.c).
     // The taskbar button flashes until it is brought up, and OOT_FULLSCREEN waits for that first activation.
-    g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"OoT Recomp", WND_STYLE, CW_USEDEFAULT, CW_USEDEFAULT, ow, oh, NULL,
+    g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"DekooNut", WND_STYLE, CW_USEDEFAULT, CW_USEDEFAULT, ow, oh, NULL,
                              NULL, inst, NULL);
     if (!g_hwnd) {
         rt_log("gfx: CreateWindowEx failed (%lu)", GetLastError());
