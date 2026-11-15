@@ -599,7 +599,11 @@ static void tab_screen(float scale) {
     opt_choice("OOT_VK_PRESENT", UI_MENU_PRESENT, present, 3, UI_MENU_PRESENT_DESC, present_note());
     if (vk_frame_gen_available()) {   // the names follow the setting's off|smooth_motion
         static const UiTextId gen[] = {UI_MENU_FRAME_GEN_OFF, UI_MENU_FRAME_GEN_SMOOTH};
-        opt_choice("OOT_FRAME_GEN", UI_MENU_FRAME_GEN, gen, 2, UI_MENU_FRAME_GEN_DESC);
+        // the driver's layer is switched when the game starts: say so while the choice is not what runs
+        int chosen = !strcmp(cfg_value("OOT_FRAME_GEN"), "smooth_motion");
+        opt_choice("OOT_FRAME_GEN", UI_MENU_FRAME_GEN, gen, 2, UI_MENU_FRAME_GEN_DESC,
+                   chosen == vk_frame_gen_on() ? nullptr
+                   : menu_text(chosen ? UI_MENU_FRAME_GEN_RESTART_ON : UI_MENU_FRAME_GEN_RESTART_OFF));
     }
     row_gpu();
     static const UiTextId perf[] = {UI_MENU_PERF_OFF, UI_MENU_PERF_FPS, UI_MENU_PERF_FULL};

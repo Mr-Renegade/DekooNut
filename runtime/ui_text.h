@@ -19,6 +19,7 @@ typedef enum {
     UI_MENU_CONTINUE, UI_MENU_QUIT,
     UI_MENU_ON, UI_MENU_OFF, UI_MENU_DEFAULT_MARK,   // "default" beside the default value
     UI_MENU_AFTER_RESTART,    // note on a setting that is read at start
+    UI_MENU_RESTART_NOTE,     // the same as a sentence, in the description pane
     UI_MENU_SET_BY_ENV,       // note on a setting an environment variable fixes
     UI_MENU_SAVE_FAILED,
     UI_MENU_VERSION,   // "DekooNut %s, game %s": the port version and the game update, beside the title
@@ -34,7 +35,9 @@ typedef enum {
     UI_MENU_GRAPHICS,         // group heading over the resolution rows
     UI_MENU_OUTPUT_RES, UI_MENU_OUTPUT_RES_DESC,
     UI_MENU_RENDER_SCALE, UI_MENU_RENDER_SCALE_DESC, UI_MENU_RENDER_SCALE_GAME,
-    UI_MENU_FRAME_GEN, UI_MENU_FRAME_GEN_DESC, UI_MENU_FRAME_GEN_OFF, UI_MENU_FRAME_GEN_SMOOTH,   // where the driver does it
+    UI_MENU_FRAME_GEN, UI_MENU_FRAME_GEN_DESC, UI_MENU_FRAME_GEN_OFF, UI_MENU_FRAME_GEN_SMOOTH,
+    UI_MENU_FRAME_GEN_RESTART_ON, UI_MENU_FRAME_GEN_RESTART_OFF,   // under the value while the choice is not what runs
+      // where the driver does it
     UI_MENU_DLSS, UI_MENU_DLSS_DESC, UI_MENU_DLSS_ON, UI_MENU_DLSS_FAST, UI_MENU_DLSS_OFF,   // shown on NVIDIA cards
     UI_MENU_UPSCALER, UI_MENU_UPSCALER_DESC, UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR,
     UI_MENU_ASPECT, UI_MENU_ASPECT_DESC, UI_MENU_ASPECT_FIT, UI_MENU_ASPECT_STRETCH,

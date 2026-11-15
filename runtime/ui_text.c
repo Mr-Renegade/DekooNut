@@ -33,6 +33,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_CONTINUE] = "Continue", [UI_MENU_QUIT] = "Quit game",
     [UI_MENU_ON] = "On", [UI_MENU_OFF] = "Off", [UI_MENU_DEFAULT_MARK] = "default",
     [UI_MENU_AFTER_RESTART] = "after restart", [UI_MENU_SET_BY_ENV] = "set by environment variable",
+    [UI_MENU_RESTART_NOTE] = "Restart the game for this setting to take effect.",
     [UI_MENU_SAVE_FAILED] = "could not save settings",
     [UI_MENU_VERSION] = "DekooNut %s, game %s",
 
@@ -47,6 +48,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                "game's, so 60 frames per second show as 120 on a display of 120 Hz or more. The "
                                "controls answer a little later.",
     [UI_MENU_FRAME_GEN_OFF] = "Off", [UI_MENU_FRAME_GEN_SMOOTH] = "NVIDIA Smooth Motion",
+    [UI_MENU_FRAME_GEN_RESTART_ON] = "restart the game to turn it on",
+    [UI_MENU_FRAME_GEN_RESTART_OFF] = "restart the game to turn it off",
     [UI_MENU_GPU] = "Graphics card", [UI_MENU_GPU_DESC] = "The Vulkan device that draws the game.",
     [UI_MENU_GPU_AUTO] = "Automatic",
     [UI_MENU_PERF_OVERLAY] = "Performance overlay",
@@ -230,6 +233,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_ON] = "Вкл.", [UI_MENU_OFF] = "Выкл.",
     [UI_MENU_DEFAULT_MARK] = "по умолчанию",
     [UI_MENU_AFTER_RESTART] = "после перезапуска", [UI_MENU_SET_BY_ENV] = "задано переменной окружения",
+    [UI_MENU_RESTART_NOTE] = "Чтобы настройка подействовала, перезапустите игру.",
     [UI_MENU_SAVE_FAILED] = "не удалось сохранить настройки",
     [UI_MENU_VERSION] = "DekooNut %s, игра %s",
 
@@ -245,6 +249,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                "кадрами игры, поэтому 60 кадров в секунду выглядят как 120 на экране с частотой 120 Гц "
                                "и выше. Управление откликается чуть позже.",
     [UI_MENU_FRAME_GEN_OFF] = "Выкл.", [UI_MENU_FRAME_GEN_SMOOTH] = "NVIDIA Smooth Motion",
+    [UI_MENU_FRAME_GEN_RESTART_ON] = "перезапустите игру, чтобы включить",
+    [UI_MENU_FRAME_GEN_RESTART_OFF] = "перезапустите игру, чтобы выключить",
     [UI_MENU_GPU] = "Видеокарта", [UI_MENU_GPU_DESC] = "Устройство Vulkan, которое рисует игру.",
     [UI_MENU_GPU_AUTO] = "Автоматически",
     [UI_MENU_PERF_OVERLAY] = "Индикатор производительности",

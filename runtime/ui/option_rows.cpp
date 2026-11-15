@@ -35,19 +35,20 @@ static bool g_disable_next;              // opt_disable_next: the next row is gr
 static UiTextId g_disable_note;
 
 // The description pane: this frame's hovered and selected rows, the page's first row, and the last one shown.
-struct Desc { char text[UI_DESC_BYTES]; };
+struct Desc { char text[UI_DESC_BYTES]; bool restart; };   // restart: the setting is read at start, said below the text
 static Desc g_hover, g_focus, g_first, g_shown;
 
 // disabled: the note of a row opt_disable_next greyed out, else NULL.
 static void desc_set(Desc &d, UiTextId desc, const char *key, const CfgMeta *m, const char *disabled) {
     int n = snprintf(d.text, sizeof d.text, "%s", menu_text(desc));
+    d.restart = false;
     if (n < 0 || n >= (int)sizeof d.text) return;
     if (disabled)
         snprintf(d.text + n, sizeof d.text - n, "\n\n%s", disabled);
     else if (cfg_from_env(key))
         snprintf(d.text + n, sizeof d.text - n, "\n\n%s %s", menu_text(UI_MENU_SET_BY_ENV), key);
     else if (m && !m->live)
-        snprintf(d.text + n, sizeof d.text - n, "\n\n%s", menu_text(UI_MENU_AFTER_RESTART));
+        d.restart = true;
 }
 
 void opt_focus_first(void) { g_focus_req = true; }
@@ -93,6 +94,12 @@ void opt_end(void) {
     ImGui::PopStyleVar();
     ImGui::PushTextWrapPos(0);
     ImGui::TextUnformatted(g_shown.text);
+    if (g_shown.restart) {   // a line of its own in the notes' colour: a small "after restart" on the row is easy to miss
+        ImGui::Dummy(ImVec2(0, 10 * g_scale));
+        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(236, 170, 84, 255));
+        ImGui::TextUnformatted(menu_text(UI_MENU_RESTART_NOTE));
+        ImGui::PopStyleColor();
+    }
     ImGui::PopTextWrapPos();
     ImGui::EndChild();
     ImGui::PopID();
