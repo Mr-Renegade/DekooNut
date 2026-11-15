@@ -36,8 +36,20 @@ typedef struct {
     AudioEffectDsp *dsp; unsigned type; uint8_t wire[160];
     float biquad_z[6][2], numerator[3], denominator[2]; uint8_t biquad_channels;
 } EffectState;
+// What a voice or a mix sent in the block before, per send (a source channel into one mix buffer).
+// Ramp: the console's renderer ramps every send from the last block's gain to this block's across the block; a gain
+// that changes in one step is a jump in the waveform at the block edge. A voice or mix that was not rendered in the
+// block before starts at its new gain.
+// Depop: a voice that stops, is dropped or is started over between two blocks ends in the middle of its wave, a jump
+// of its last sample's size in every buffer it fed. The console adds that last sample to the buffer's depop value,
+// which it then lets decay over the next blocks; so does voice_depop / depop_apply here.
+#define RAMP_DESTS 16
+typedef struct { float gain, last; int32_t buffer; uint32_t block; } Send;   // last: the send's last sample; block: when
+typedef struct { uint32_t block, resets; Send direct[24][24], split[RAMP_DESTS][24]; } GainMemory;
 typedef struct Mixer {
     float *buf; int nbuf, frame;
+    GainMemory *voice_gain, *mix_gain; uint32_t block;   // per voice and per mix; block counts audio_mixer_render calls
+    float *depop;                                  // per mix buffer: what stopped voices left, decaying
     int *offset;                                   // first mix buffer of each mix id
     SplitInfo *split; int nsplit; SplitDest *dest; int ndest;
     SDL_AudioStream *stream; int device_ok, rate;
@@ -195,6 +207,13 @@ int64_t audio_mixer_pace_ns(AudioRenderer *r, uint64_t now) {
     return ns < 500000 ? 500000 : ns;   // until the device has taken it below the target
 }
 
+int audio_mixer_low(AudioRenderer *r) {
+    Mixer *m = r->mixer;
+    if (!m) return 0;
+    uint64_t have = atomic_load(&m->wr) - atomic_load_explicit(&m->rd, memory_order_acquire);
+    return have < 2 * (uint64_t)m->frame;
+}
+
 // Render thread only.
 static void output_push(Mixer *m, const float *lr, int frames) {
     uint64_t wr = atomic_load(&m->wr), rd = atomic_load_explicit(&m->rd, memory_order_acquire);
@@ -267,6 +286,11 @@ void audio_mixer_open(AudioRenderer *r) {
     m->sink_written = calloc(sinks, sizeof(uint32_t));
     if (!m->sink_address || !m->sink_size || !m->sink_offset || !m->sink_old || !m->sink_written)
         rt_fatal("audio sink state allocation");
+    m->voice_gain = calloc((size_t)(r->param.voice_count > 0 ? r->param.voice_count : 1), sizeof *m->voice_gain);
+    m->mix_gain = calloc((size_t)(r->param.submix_count >= 0 ? r->param.submix_count + 1 : 1), sizeof *m->mix_gain);
+    m->depop = calloc((size_t)(m->nbuf > 0 ? m->nbuf : 1), sizeof *m->depop);
+    if (!m->voice_gain || !m->mix_gain || !m->depop) rt_fatal("audio gain memory allocation");
+    m->block = 1;
     m->prefill = 4;
     r->mixer = m;
     atomic_store(&m->playing, r->state == 0);
@@ -296,6 +320,9 @@ void audio_mixer_close(AudioRenderer *r) {
         audio_effect_free(m->effect[i].dsp);
         free(m->effect[i].delay);
     }
+    free(m->voice_gain);
+    free(m->mix_gain);
+    free(m->depop);
     free(m->sink_address);
     free(m->sink_size);
     free(m->sink_offset);
@@ -500,6 +527,36 @@ static float *mixbuf(Mixer *m, int i) { return m->buf + (size_t)i * (size_t)m->f
 static void accumulate(Mixer *m, int buffer, const float *src, float vol, int frames) {
     if (vol == 0 || buffer < 0 || buffer >= m->nbuf) return;
     float *d = mixbuf(m, buffer); for (int k = 0; k < frames; k++) d[k] += src[k] * vol;
+}
+// accumulate with the gain ramped from the send's last gain (when live: it was sent in the block before) to vol.
+static void accumulate_ramp(Mixer *m, int buffer, const float *src, Send *s, int live, float vol, int frames) {
+    float from = live && s->block == m->block - 1 ? s->gain : vol;
+    s->gain = vol, s->buffer = buffer, s->block = m->block, s->last = 0;
+    if (buffer < 0 || buffer >= m->nbuf) return;
+    s->last = src[frames - 1] * vol;
+    if (from == vol) { accumulate(m, buffer, src, vol, frames); return; }
+    float *d = mixbuf(m, buffer);
+    const float step = (vol - from) / (float)frames;
+    for (int k = 0; k < frames; k++) { from += step; d[k] += src[k] * from; }
+}
+// A voice rendered in block g->block is not continued: its sends' last samples go to their buffers' depop values.
+static void sends_depop(Mixer *m, Send *s, size_t n, uint32_t block) {
+    for (; n; n--, s++)
+        if (s->block == block && s->last != 0 && s->buffer >= 0 && s->buffer < m->nbuf) m->depop[s->buffer] += s->last, s->last = 0;
+}
+static void voice_depop(Mixer *m, GainMemory *g) {
+    sends_depop(m, &g->direct[0][0], sizeof g->direct / sizeof(Send), g->block);
+    sends_depop(m, &g->split[0][0], sizeof g->split / sizeof(Send), g->block);
+}
+// Every buffer's depop value decays into the buffer (the console's factor per sample at 48 and at 32 kHz).
+static void depop_apply(Mixer *m, int rate, int frames) {
+    const float decay = rate == 32000 ? 0.943695f : 0.962189f;
+    for (int b = 0; b < m->nbuf; b++) {
+        float d = m->depop[b]; if (d == 0) continue;
+        float *q = mixbuf(m, b);
+        for (int k = 0; k < frames; k++) { d *= decay; q[k] += d; }
+        m->depop[b] = fabsf(d) < 1e-6f ? 0 : d;
+    }
 }
 static int mix_valid(AudioRenderer *r, int32_t id) { return id >= 0 && id <= r->param.submix_count && r->mixes[id].in_use; }
 static void mix_order_edge(AudioRenderer *r, int source, int destination, uint32_t edges[256][8],
@@ -727,6 +784,7 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
     Mixer *m = r->mixer; if (!m) return;
     const int frames = m->frame, mc = r->param.submix_count + 1;
     diag_frames += (uint64_t)frames;
+    m->block++;
     memset(m->buf, 0, (size_t)m->nbuf * (size_t)frames * sizeof(float));
     int at = 0;
     for (int i = 0; i < mc; i++) { m->offset[i] = at; if (r->mixes[i].in_use) at += r->mixes[i].buffer_count; }
@@ -735,8 +793,12 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
     float (*vs)[MAX_FRAME]=m->voice_scratch,*filtered=m->filter_scratch;
     for (int i = 0; i < r->param.voice_count; i++) {
         ServerVoice *v = &r->voices[i];
-        if (!v->in.in_use || v->state != SV_STARTED || !v->in.sample_rate || !v->valid[v->index]) continue;
+        GainMemory *g = &m->voice_gain[i];
+        int live = g->block == m->block - 1;   // sent in the block before: ramp from those gains
+        if (!v->in.in_use || v->state != SV_STARTED || !v->in.sample_rate || !v->valid[v->index]) { if (live) voice_depop(m, g); continue; }
         int cc = (int)v->in.channel_count; if (cc < 1 || cc > 6) { report_once(m, 2, "voice channel count unsupported", cc); continue; }
+        if (live && g->resets != v->resets) { voice_depop(m, g); live = 0; }   // started over: the old sound ends here
+        g->resets = v->resets;
         voice_render(r, v, vs, frames);
         for (int f = 0; f < 2; f++) if (v->in.biquads[f].enable) {
             const AudrenBiquad *b = &v->in.biquads[f];
@@ -777,22 +839,27 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
                 }
             }
         }
+        g->block = m->block;
         if (v->in.splitter_id != SPLITTER_UNUSED && v->in.splitter_id < (uint32_t)m->nsplit) {
             const SplitInfo *s = &m->split[v->in.splitter_id];
             for (int c = 0; c < cc; c++) for (int k = c; k < s->ndest; k += cc) {
                 SplitDest *d = &m->dest[s->ids[k]];
                 if (!d->used || !mix_valid(r, d->dest)) continue;
                 const float *source=splitter_filter(d,vs[c],filtered,frames);
-                for (int b = 0; b < r->mixes[d->dest].buffer_count && b < 24; b++) accumulate(m, m->offset[d->dest] + b, source, d->vol[b] * v->in.volume, frames);
+                for (int b = 0; b < r->mixes[d->dest].buffer_count && b < 24; b++) {
+                    if (k < RAMP_DESTS) accumulate_ramp(m, m->offset[d->dest] + b, source, &g->split[k][b], live, d->vol[b] * v->in.volume, frames);
+                    else accumulate(m, m->offset[d->dest] + b, source, d->vol[b] * v->in.volume, frames);
+                }
             }
         } else if (mix_valid(r, v->in.mix_id)) {
             for (int c = 0; c < cc; c++) {
                 int32_t id = v->in.channel_ids[c]; if (id < 0 || id >= r->param.voice_count * 6) continue;
                 const AudrenChannelIn *ch = &r->channels[id];
-                for (int b = 0; b < r->mixes[v->in.mix_id].buffer_count && b < 24; b++) accumulate(m, m->offset[v->in.mix_id] + b, vs[c], ch->mix[b] * v->in.volume, frames);
+                for (int b = 0; b < r->mixes[v->in.mix_id].buffer_count && b < 24; b++) accumulate_ramp(m, m->offset[v->in.mix_id] + b, vs[c], &g->direct[c][b], live, ch->mix[b] * v->in.volume, frames);
             }
         }
     }
+    depop_apply(m, r->param.sample_rate, frames);
     /* Every direct or splitter-fed source precedes its destination submix. */
     int order[256], n = mix_order(r, order);
     for (int a = 0; a < n; a++) {
@@ -815,17 +882,23 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
                 if (a == n - 1) mix_shown = 0;
             }
         }
+        GainMemory *g = &m->mix_gain[order[a]];
+        const int live = g->block == m->block - 1;
+        g->block = m->block;
         if (x->dest_splitter_id != SPLITTER_UNUSED && x->dest_splitter_id < (uint32_t)m->nsplit) {
             const SplitInfo *s = &m->split[x->dest_splitter_id];
             for (int c = 0; c < x->buffer_count && c < 24; c++) for (int k = c; k < s->ndest; k += x->buffer_count) {
                 SplitDest *d = &m->dest[s->ids[k]];
                 if (!d->used || !mix_valid(r, d->dest)) continue;
                 const float *source=splitter_filter(d,mixbuf(m,src+c),filtered,frames);
-                for (int b = 0; b < r->mixes[d->dest].buffer_count && b < 24; b++) accumulate(m, m->offset[d->dest] + b, source, d->vol[b] * x->volume, frames);
+                for (int b = 0; b < r->mixes[d->dest].buffer_count && b < 24; b++) {
+                    if (k < RAMP_DESTS) accumulate_ramp(m, m->offset[d->dest] + b, source, &g->split[k][b], live, d->vol[b] * x->volume, frames);
+                    else accumulate(m, m->offset[d->dest] + b, source, d->vol[b] * x->volume, frames);
+                }
             }
         } else if (mix_valid(r, x->dest_mix_id)) {
             for (int c = 0; c < x->buffer_count && c < 24; c++)
-                for (int b = 0; b < r->mixes[x->dest_mix_id].buffer_count && b < 24; b++) accumulate(m, m->offset[x->dest_mix_id] + b, mixbuf(m, src + c), x->mix[c][b] * x->volume, frames);
+                for (int b = 0; b < r->mixes[x->dest_mix_id].buffer_count && b < 24; b++) accumulate_ramp(m, m->offset[x->dest_mix_id] + b, mixbuf(m, src + c), &g->direct[c][b], live, x->mix[c][b] * x->volume, frames);
         }
     }
     if (r->mixes[0].in_use) mix_effects(r, 0);

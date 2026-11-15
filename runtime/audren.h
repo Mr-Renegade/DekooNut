@@ -145,6 +145,7 @@ typedef struct {
     uint32_t consumed, drops;
     struct { int16_t history[2]; int32_t buffer; uint64_t at; } adpcm;   // DSP-ADPCM decode cursor (buffer slot, next sample) and history
     float biquad_state[2][6][2];   // filter, channel: transposed direct-form II delays
+    uint32_t resets;               // voice_reset calls: the mixer sees a voice started over between two blocks
 } ServerVoice;
 enum { SV_STOPPED, SV_STARTED, SV_PAUSED, SV_STOPPING };
 
@@ -187,5 +188,6 @@ void audio_mixer_render(AudioRenderer *r, double seconds);   // after audio_voic
 // Device pacing for the render thread at kern_now_ns `now`: 0 renders the next frame now, a positive value waits that
 // many ns, -1 leaves the pace to the render thread's timer (no device, renderer stopped or stalled).
 int64_t audio_mixer_pace_ns(AudioRenderer *r, uint64_t now);
+int audio_mixer_low(AudioRenderer *r);   // the device queue holds less than two blocks: render without spacing
 int audio_buffer_empty(const AudrenWaveBuffer *b);   // no samples to decode: played as soon as it is reached
 void audio_device_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs);   // IAudioDevice

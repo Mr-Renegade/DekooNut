@@ -70,6 +70,10 @@ has the numbers. A level is a few lines in the install's `oot.ini`, which you ca
 **Updating.** `git pull`, then `./setup.sh --dest <install folder>` (or the window): only what changed is rebuilt.
 Your saves are in the install folder's `profile` and stay.
 
+**Mods.** Put RomFS mods in a `mods` folder in the install folder, in the layout emulators use:
+`mods/<name>/romfs/...` holds files that replace or add to the game's own. When two mods have the same file, the one
+whose folder name sorts last is used; a folder whose name starts with `-` or `_` is off. The log names each mod.
+
 **Windows.** `setup.bat` is the same set-up for Windows; it fetches everything it needs, Python and git included.
 Its first steps run there; a complete install on Windows has not been done yet, and a Windows build has no DLSS for
 now.

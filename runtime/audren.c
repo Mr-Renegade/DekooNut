@@ -84,6 +84,7 @@ static void voice_reset(ServerVoice *v) {
     v->loops_done = 0;
     memset(&v->adpcm, 0, sizeof v->adpcm);
     memset(v->biquad_state, 0, sizeof v->biquad_state);
+    v->resets++;
 }
 
 static void update_voice(AudioRenderer *r, const AudrenVoiceIn *in) {
@@ -349,7 +350,7 @@ static void render_thread(void *p) {
     plat_thread_priority(PLAT_PRIO_HIGHEST);
     const uint64_t frame_ns = (uint64_t)r->param.sample_count * 1000000000ull / (uint64_t)r->param.sample_rate;
     const double frame = (double)r->param.sample_count / r->param.sample_rate;
-    uint64_t next = kern_now_ns();
+    uint64_t next = kern_now_ns(), last = 0;   // last: when the newest block's render began
     while (plat_cas32(&r->running, 0, 0)) {
         uint64_t now = kern_now_ns();
         int64_t pace = audio_mixer_pace_ns(r, now);
@@ -358,12 +359,23 @@ static void render_thread(void *p) {
             continue;
         }
         if (pace == 0) {
+            // The device takes a whole period at once (1024 frames, more than four blocks). Rendering those blocks
+            // back to back gives the game no time between them: it queues wave buffers and sets volumes once per
+            // block's event, as on the console, where a block comes every 5 ms. Voices then run dry or jump inside
+            // the burst, which is heard as crackling. So the blocks are spread: nine tenths of a block's time from
+            // one to the next (the tenth is the room to catch up), unless the queue is nearly empty.
+            const uint64_t gap = frame_ns * 9 / 10;
+            if (last && now - last < gap && !audio_mixer_low(r)) {
+                plat_wait_ns(gap - (now - last));
+                continue;
+            }
             next = now + frame_ns;   // where the timer goes on if the device stops pacing
         } else {
             if (next > now) plat_wait_ns(next - now);
             else if (now - next > 100000000ull) next = now;   // fell far behind (debugger, sleep): resynchronise
             next += frame_ns;
         }
+        last = kern_now_ns();
         plat_mutex_lock(&r->lock);
         if (r->state == 0) {
             voices_prepare(r);

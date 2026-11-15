@@ -27,7 +27,8 @@ typedef struct { uint64_t offset, size; uint32_t name, len; } Entry;
 _Static_assert(sizeof(Entry) == 24, "index entry layout");
 
 typedef struct { uint32_t volume, pad; uint64_t file_id, size, write_time, create_time; } Identity;   // no padding
-typedef struct { uint64_t index, size; char *path, *name; Identity id; } Overlay;
+// rank: 0 for a manifest folder's file, else the number of the mod (mods folder) it is from; a higher rank wins a path
+typedef struct { uint64_t index, size; char *path, *name; Identity id; uint32_t rank; } Overlay;
 
 static uint8_t *index_bytes;
 static size_t index_size;
@@ -249,6 +250,180 @@ bad:
 #undef BAD
 }
 
+// ---- the mods folder
+// <mods>/<name>/romfs/<RomFS path>: the layout emulators use, so a RomFS mod made for them is copied in as it is. There
+// is no manifest: every file under a mod's romfs folder is served in place of the RomFS file of that path, or added
+// when the RomFS has none. <mods> is "mods" next to oot.exe, or OOT_MODS (0: none). Any folder below it that holds a
+// romfs folder is a mod, so <mods>/contents/<title id>/<name>/romfs works too. A folder whose name starts with '-' or
+// '_' is off. Mods are read in path order; when two have the same file the later one's is served, and a mod's file is
+// served before a manifest folder's (overlay_dedupe). Nothing is hashed; a file's identity is kept from this scan as a
+// manifest overlay's is. A mod's exefs folder is not applied: the game's code is compiled ahead of time.
+typedef struct { char *name; int kind; } DirEnt;
+typedef struct { DirEnt *v; size_t n; } DirList;
+typedef struct { uint32_t rank; size_t files, added; uint64_t bytes; } ModScan;
+static uint32_t mod_count;           // mods read; a file's rank is its mod's number
+
+static int dir_collect(const char *name, int kind, uint64_t size, void *ctx) {
+    (void)size;
+    DirList *l = ctx;
+    l->v = realloc(l->v, (l->n + 1) * sizeof *l->v);
+    char *copy = strdup(name);
+    need(l->v && copy, "mods folder listing");
+    l->v[l->n++] = (DirEnt){copy, kind};
+    return 1;
+}
+
+static int dirent_order(const void *a, const void *b) {
+    return strcmp(((const DirEnt *)a)->name, ((const DirEnt *)b)->name);
+}
+
+// The entries of dir in name order; none when it cannot be listed.
+static DirList dir_sorted(const char *dir) {
+    DirList l = {0};
+    plat_fs_list(dir, dir_collect, &l);
+    if (l.n) qsort(l.v, l.n, sizeof *l.v, dirent_order);
+    return l;
+}
+
+static void dir_free(DirList *l) {
+    for (size_t k = 0; k < l->n; k++) free(l->v[k].name);
+    free(l->v);
+}
+
+// The mod's file host serves RomFS path name.
+static void mod_file(ModScan *m, const char *host, const char *name) {
+    if (!romfs_path_valid_relative(name)) {
+        rt_log("mods: %s is not a RomFS path, left out", host);
+        return;
+    }
+    PlatFile *f = open_read(host);
+    if (!f) {
+        rt_log("mods: %s cannot be read, left out", host);
+        return;
+    }
+    Identity id = identity_of(f);
+    plat_file_close(f);
+    uint64_t i = lower(name);
+    int known = i < file_count && !strcmp(entry_name(entry(i)), name);
+    if (noverlay == overlay_cap) {
+        overlay_cap = overlay_cap ? overlay_cap * 2 : 16;
+        overlays = realloc(overlays, overlay_cap * sizeof *overlays);
+        need(overlays != NULL, "overlay table");
+    }
+    char *copy = strdup(host), *rel = strdup(name);
+    need(copy && rel, "overlay path copy");
+    overlays[noverlay++] = (Overlay){known ? i : ADDED, id.size, copy, rel, id, m->rank};
+    m->files++, m->added += !known, m->bytes += id.size;
+    if (m->files <= 16)
+        rt_log("mods: %s (%llu bytes) %s", name, (unsigned long long)id.size, known ? "replaces the original" : "is added");
+}
+
+// Every file below host folder dir: its RomFS path is rel ("" or ending in '/') and its name.
+static void mod_walk(ModScan *m, const char *dir, const char *rel, int depth) {
+    DirList l = dir_sorted(dir);
+    for (size_t k = 0; k < l.n; k++) {
+        char host[4200], name[4096];
+        if (snprintf(host, sizeof host, "%s/%s", dir, l.v[k].name) >= (int)sizeof host ||
+            snprintf(name, sizeof name, "%s%s/", rel, l.v[k].name) >= (int)sizeof name) {
+            rt_log("mods: a path below %s is too long, left out", dir);
+            continue;
+        }
+        if (l.v[k].kind == PLAT_FS_DIR) {
+            if (depth < 32) mod_walk(m, host, name, depth + 1);
+        } else if (l.v[k].kind == PLAT_FS_FILE) {
+            name[strlen(name) - 1] = 0;
+            mod_file(m, host, name);
+        } else {
+            rt_log("mods: %s is a link, left out", host);
+        }
+    }
+    dir_free(&l);
+}
+
+// dir and the folders below it: one that holds a romfs (or exefs) folder is a mod, the others are searched.
+static void mods_scan(const char *dir, int depth) {
+    DirList l = dir_sorted(dir);
+    int romfs = 0, exefs = 0;
+    for (size_t k = 0; k < l.n; k++)
+        if (l.v[k].kind == PLAT_FS_DIR) romfs |= !strcmp(l.v[k].name, "romfs"), exefs |= !strcmp(l.v[k].name, "exefs");
+    char sub[4200];
+    if (depth && (romfs || exefs)) {
+        if (exefs) rt_log("mods: %s/exefs is not applied (the game's code is compiled ahead of time)", dir);
+        if (romfs && snprintf(sub, sizeof sub, "%s/romfs", dir) < (int)sizeof sub) {
+            ModScan m = {++mod_count, 0, 0, 0};
+            mod_walk(&m, sub, "", 0);
+            rt_log("mods: %s: %zu file%s (%zu added%s), %.1f MiB", dir, m.files, m.files == 1 ? "" : "s", m.added,
+                   m.files > 16 ? "; the first 16 are listed" : "", m.bytes / 1048576.0);
+        }
+    } else {
+        if (romfs) rt_log("mods: %s/romfs is not in a mod's own folder (<mods>/<name>/romfs), left out", dir);
+        for (size_t k = 0; k < l.n && depth < 4; k++) {
+            const char *n = l.v[k].name;
+            if (l.v[k].kind != PLAT_FS_DIR || n[0] == '.' || (!depth && (!strcmp(n, "romfs") || !strcmp(n, "exefs")))) continue;
+            if (snprintf(sub, sizeof sub, "%s/%s", dir, n) >= (int)sizeof sub) continue;
+            if (n[0] == '-' || n[0] == '_') rt_log("mods: %s is off (its name starts with '%c')", sub, n[0]);
+            else mods_scan(sub, depth + 1);
+        }
+    }
+    dir_free(&l);
+}
+
+static void mods_init(void) {
+    // OOT_MODS: a relative path is relative to the folder of oot.exe, like the other paths. Unset: "mods" there.
+    const char *dir = cfg_get("OOT_MODS");
+    int named = dir && *dir;
+    if (named && !strcmp(dir, "0")) return;
+    if (!named) dir = "mods";
+    char rel[2100];
+    if (dir[0] != '/' && dir[0] != '\\' && dir[1] != ':' && snprintf(rel, sizeof rel, "%s/%s", index_dir, dir) < (int)sizeof rel)
+        dir = rel;
+    if (!plat_dir_exists(dir)) {
+        if (named) rt_log("mods: %s is not a folder", dir);
+        return;
+    }
+    double t0 = now_s();
+    size_t first = noverlay;
+    mods_scan(dir, 0);
+    rt_log("mods: %s: %u mod%s, %zu file%s, read in %.2f s", dir, mod_count, mod_count == 1 ? "" : "s", noverlay - first,
+           noverlay - first == 1 ? "" : "s", now_s() - t0);
+}
+
+static int dedupe_order(const void *a, const void *b) {
+    const Overlay *x = &overlays[*(const size_t *)a], *y = &overlays[*(const size_t *)b];
+    int c = strcmp(x->name, y->name);
+    return c ? c : (x->rank > y->rank) - (x->rank < y->rank);
+}
+
+// Of the files that serve one RomFS path, the last mod's stays: a manifest folder's file and an earlier mod's give way
+// to it. Two manifest folders with one path are left for overlay_init and added_init, which stop the start.
+static void overlay_dedupe(void) {
+    if (!mod_count || noverlay < 2) return;
+    size_t *order = malloc(noverlay * sizeof *order), dropped = 0;
+    need(order != NULL, "overlay order");
+    for (size_t k = 0; k < noverlay; k++) order[k] = k;
+    qsort(order, noverlay, sizeof *order, dedupe_order);
+    for (size_t k = 0, end; k < noverlay; k = end) {
+        for (end = k + 1; end < noverlay && !strcmp(overlays[order[end]].name, overlays[order[k]].name);) end++;
+        Overlay *win = &overlays[order[end - 1]];
+        if (!win->rank) continue;
+        for (size_t j = k; j + 1 < end; j++) {
+            Overlay *o = &overlays[order[j]];
+            if (dropped++ < 16) rt_log("mods: %s is served from %s, not from %s", o->name, win->path, o->path);
+            free(o->path);
+            free(o->name);
+            o->path = NULL;
+        }
+    }
+    free(order);
+    if (!dropped) return;
+    size_t n = 0;
+    for (size_t k = 0; k < noverlay; k++)
+        if (overlays[k].path) overlays[n++] = overlays[k];
+    noverlay = n;
+    rt_log("mods: %zu file%s gave way to a mod's%s", dropped, dropped == 1 ? "" : "s",
+           dropped > 16 ? " (the first 16 are listed)" : "");
+}
+
 static int overlay_order(const void *a, const void *b) {
     uint64_t x = ((const Overlay *)a)->index, y = ((const Overlay *)b)->index;
     return (x > y) - (x < y);
@@ -354,6 +529,8 @@ static void overlay_init(void) {
     const char *dirs[2] = {patches, mods};
     for (int i = 0; i < 2; i++)
         if (dirs[i] && *dirs[i] && strcmp(dirs[i], "0")) overlay_load(dirs[i], 0);
+    mods_init();
+    overlay_dedupe();
     heapdef_overlay();
     added_init();
     if (noverlay) qsort(overlays, noverlay, sizeof *overlays, overlay_order);

@@ -129,6 +129,11 @@
 # Folder with RomFS mod files that replace or add game files: a game-data pack. A relative path starts at the folder
 # of oot.exe. Default: none.
 # romfs_mods =
+# Folder with mods, each in a folder of its own in the layout emulators use: <name>/romfs/<game path>. Their files
+# replace or add game files; no list or checksums are needed. When two mods have the same file the one whose folder name
+# sorts last is used; a folder whose name starts with - or _ is off. 0 = none. A relative path starts at the folder of
+# oot.exe. Default: mods. Read at start.
+# mods = mods
 
 [diagnostics]
 # Extra lines in the log, comma separated: svc, host, ipc, fs, gfx, perf, sched, audio, present or all. The menu's

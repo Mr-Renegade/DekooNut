@@ -193,6 +193,8 @@ Each reads `build/romfs-oot111` (never writes there) and writes the changed file
   `romfs_mods` and `gfx_scale` in `oot.ini`; a relative pack path starts at the folder of `oot`. The game serves the
   pack's files in place of the originals and refuses a pack built from another RomFS. `gfx_scale = 0` makes the game
   draw at its full display size.
+- Mods: a `mods` folder next to `oot` (`OOT_MODS` or `mods` in `oot.ini` names another, `0` none), read as
+  `mods/<name>/romfs/...` without a manifest ([how-it-works.md](how-it-works.md), "RomFS overlays").
 - Settings: `oot.ini` next to `oot` (copy `oot.ini.example`; each line shows the default). An `OOT_<KEY>` environment
   variable overrides the key of the same name. Many settings also change in the in-game menu.
 - The first start translates the shaders step 6 did not prepare, and draws a mesh shader only once

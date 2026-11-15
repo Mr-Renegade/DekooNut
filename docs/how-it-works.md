@@ -159,6 +159,15 @@ index and the one named by `OOT_ROMFS_MODS` (unset or `0` means none). A missing
 changed original stops the start. An overlay file is opened when the game opens it. Its identity (volume, file id, size,
 last write) is kept from the start check, and an open that finds another file there stops the game.
 
+Mods need no manifest. A `mods` folder next to `oot.exe` (or the folder `OOT_MODS` names; `0` means none) is read in
+the layout emulators use: `mods/<name>/romfs/<RomFS path>`. Every file below a mod's `romfs` folder is served in place
+of the RomFS file of that path, or added when the RomFS has none. Any folder below `mods` that holds a `romfs` folder
+is a mod, so `mods/contents/<title id>/<name>/romfs` works too; a folder whose name starts with `-` or `_` is off.
+Mods are read in path order: when two have the same file, the later one's is served (name them `01-...`, `02-...` to
+set the order), and a mod's file is served before a manifest folder's. Mod files are not hashed; their identity is kept
+from the start as an overlay's is. A mod's `exefs` folder is not applied, since the game's code is compiled ahead of
+time. The log names every mod, its first 16 files and each file that gave way to another (`mods: ...`).
+
 ### Save storage
 
 `runtime/fs_host.c` implements nn::fs. RomFS paths go to the read-only backend (`romfs.c`). Save, temporary and cache
