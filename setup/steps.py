@@ -487,7 +487,8 @@ class Game(Step):
     id, title = 'game', 'Compiling the game'
 
     def key(self, ctx):
-        return digest(ctx.keys['generate'], ctx.keys['romfs'], fetch.DLSS_COMMIT, expected()['exefs_sha256'],
+        # VERSION: the game shows it in its menu, so a new release number alone builds the game again
+        return digest(ctx.keys['generate'], ctx.keys['romfs'], fetch.DLSS_COMMIT, expected()['exefs_sha256'], VERSION,
                       tree_digest(ROOT / 'runtime', ROOT / 'tools' / 'build_game.py',
                                   ROOT / 'tools' / 'romfs_index.py'))
 
