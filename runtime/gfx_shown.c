@@ -1,6 +1,7 @@
 // The frames the display showed, for the performance overlay. On Wayland the compositor answers a feedback request with
 // the time the window's next content update was shown, or that it was dropped (the presentation-time protocol). The
 // driver's frame generation commits its frames to the same surface, so they are counted like the game's own.
+// On Windows the graphics kernel counts the frames the process put on the window's display, generated ones included.
 #include <stdint.h>
 #include <string.h>
 
@@ -167,6 +168,84 @@ double gfx_shown_fps(void) {
     plat_xchg64(&g_wanted_ns, (int64_t)now);
     if (now - (uint64_t)g_rate_ns > 1500000000ull) return 0;
     return (double)g_rate_milli / 1000.0;
+}
+
+#elif defined(_WIN32)
+#include "input_win.h"
+
+// The graphics kernel counts the frames each process put on a display (a VidPn source), the ones the driver generates
+// included. The toolchain has no header for the call, so its structs are written out as far as they are used.
+typedef struct { WCHAR DeviceName[32]; UINT hAdapter; LUID AdapterLuid; UINT VidPnSourceId; } KmtOpenAdapter;
+typedef struct { UINT hAdapter; } KmtCloseAdapter;
+typedef struct { ULONG Frame, CancelledFrame, QueuedPresent; ULONG64 Reserved[8]; } KmtSourceFrames;
+typedef struct {
+    UINT Type;
+    LUID AdapterLuid;
+    HANDLE hProcess;
+    union { KmtSourceFrames frames; ULONG64 all[97]; } Result;   // as large as the largest answer of the call
+    UINT VidPnSourceId;
+} KmtQueryStatistics;
+_Static_assert(sizeof(KmtQueryStatistics) == 808, "the layout of D3DKMT_QUERYSTATISTICS");
+#define KMT_PROCESS_VIDPNSOURCE 8   // D3DKMT_QUERYSTATISTICS_PROCESS_VIDPNSOURCE
+LONG WINAPI D3DKMTOpenAdapterFromGdiDisplayName(KmtOpenAdapter *open);
+LONG WINAPI D3DKMTCloseAdapter(const KmtCloseAdapter *close);
+LONG WINAPI D3DKMTQueryStatistics(KmtQueryStatistics *query);
+
+#define WINDOW_NS 500000000ull   // the rate is taken over half a second of the counter
+
+static HMONITOR g_mon;   // the monitor the adapter and source below are of
+static LUID g_luid;
+static UINT g_source;
+
+static int source_find(HMONITOR mon) {
+    MONITORINFOEXW mi = {.cbSize = sizeof mi};
+    KmtOpenAdapter open = {0};
+    if (!GetMonitorInfoW(mon, (MONITORINFO *)&mi)) return 0;
+    memcpy(open.DeviceName, mi.szDevice, sizeof open.DeviceName);
+    if (D3DKMTOpenAdapterFromGdiDisplayName(&open)) return 0;
+    KmtCloseAdapter close = {open.hAdapter};
+    D3DKMTCloseAdapter(&close);
+    g_luid = open.AdapterLuid, g_source = open.VidPnSourceId, g_mon = mon;
+    return 1;
+}
+
+// The process's frame count on the window's monitor. 0: none; 2: the monitor changed, so the count starts again.
+static int frames_read(ULONG *frames) {
+    HWND w = gfx_window_handle();
+    HMONITOR mon = w ? MonitorFromWindow(w, MONITOR_DEFAULTTONEAREST) : NULL;
+    int found = 1;
+    if (!mon) return 0;
+    if (mon != g_mon) {
+        if (!source_find(mon)) return 0;
+        found = 2;
+    }
+    KmtQueryStatistics q = {.Type = KMT_PROCESS_VIDPNSOURCE, .AdapterLuid = g_luid, .hProcess = GetCurrentProcess(),
+                            .VidPnSourceId = g_source};
+    if (D3DKMTQueryStatistics(&q)) return g_mon = NULL, 0;
+    *frames = q.Result.frames.Frame;
+    return found;
+}
+
+void gfx_shown_start(void *wl_display, void *wl_surface) { (void)wl_display, (void)wl_surface; }
+
+// Called by the thread that draws the overlay. 0 while the counter stands still (nothing of the process is shown).
+double gfx_shown_fps(void) {
+    static uint64_t t0, rate_ns;
+    static ULONG f0;
+    static int have = -1;   // -1 before the first read
+    static double rate;
+    uint64_t now = kern_now_ns();
+    if (!t0 || now - t0 >= WINDOW_NS) {
+        ULONG f = 0;
+        int r = frames_read(&f);
+        if (r == 1 && have == 1 && now - t0 < 4 * WINDOW_NS)
+            rate = (double)(ULONG)(f - f0) * 1e9 / (double)(now - t0), rate_ns = now;
+        if ((r != 0) != have)
+            rt_log(r ? "gfx: shown frames are counted by the graphics kernel (the process's frames on the display)"
+                     : "gfx: shown frames are not counted (no frame count from the graphics kernel)");
+        t0 = now, f0 = f, have = r != 0;
+    }
+    return rate_ns && now - rate_ns < 1500000000ull ? rate : 0;
 }
 
 #else

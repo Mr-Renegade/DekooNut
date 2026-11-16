@@ -76,7 +76,9 @@ whose folder name sorts last is used; a folder whose name starts with `-` or `_`
 
 **Windows.** `setup.bat` is the same set-up for Windows; it fetches everything it needs, Python and git included.
 Its first steps run there; a complete install on Windows has not been done yet, and a Windows build has no DLSS for
-now.
+now. Frame generation on Windows is the driver's own setting: NVIDIA app, Graphics, Program settings, add `oot.exe` from
+the install folder, "Smooth Motion" on (the row needs "Hardware-accelerated GPU scheduling" switched on in Windows and a
+restart). The performance overlay (F10) then shows the frames the display gets.
 
 Building by hand, step by step, and what each step writes: [docs/building.md](docs/building.md).
 
