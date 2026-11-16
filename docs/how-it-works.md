@@ -1107,6 +1107,12 @@ game presents its 60 frames as before and the layer works on the finished window
   120 with it, while the frame times beside it and the frame limit stay the game's.
 - It doubles what the game draws and does nothing for a game below its 60.
 
+On Windows the driver's layer is always loaded and follows the driver's own setting for the program, so `frame_gen` and
+the variable do nothing there and the menu row stays hidden. The player turns it on in the NVIDIA app: Graphics, Program
+settings, add `oot.exe` from the install folder (the driver matches the program, not a shortcut to it), "Smooth Motion"
+on. That row is greyed out until "Hardware-accelerated GPU scheduling" is on in Windows (Settings, System, Display,
+Graphics, Advanced graphics settings) and Windows was restarted.
+
 Measured on an RTX 4080 SUPER at 3840x2160 on a 120 Hz display, Hyrule Field, driver 615.71:
 - A 120 fps screen recording holds 60 different pictures per second without it and 120 with it, in `mailbox` and in
   `fifo`. The game stays at 60.0 fps.
@@ -1114,6 +1120,11 @@ Measured on an RTX 4080 SUPER at 3840x2160 on a 120 Hz display, Hyrule Field, dr
   `vkWaitForPresentKHR`, every 16th frame, `mailbox`): the controls answer about 13 ms later.
 - GPU load 74 % to 80 %, 142 W to 159 W, 0.7 GiB more video memory (the screen recorder running in both).
 - The hearts and the map stay still during camera pans (their pixels change as little as without it).
+
+The same card and display under Windows 11, driver 621.24, the window full screen and in front: the display got 60
+frames per second without it and 118 on average with it over 200 s of play (119 to 122 in half of the seconds, 100 to
+118 while the game was under its 60). GPU load 66 % to 87 %, 146 W to 172 W. The window takes longer to appear at the
+start with it.
 
 ### Shown frames
 
@@ -1124,10 +1135,17 @@ ones too, to the window's surface. A thread with an event queue of its own sends
 is on, so one is waiting at each commit; requests that share a commit report the same time, and a new time is one more
 frame. The rate is taken over half a second of those times. `libwayland-client` is the copy the window system loaded
 (`dlopen`), with the two protocol interfaces written out in the file, so the build needs no header of it.
-Where there is no such feedback (X11, Windows) the overlay shows the game's own frame rate.
+Where there is no such feedback (X11) the overlay shows the game's own frame rate.
+
+On Windows the graphics kernel counts the frames each process put on a display (`D3DKMTQueryStatistics`, per process
+and VidPn source), the driver's generated ones included. The overlay reads the count for the window's monitor every
+half second; a process may ask for its own without any rights. While the count stands still the overlay shows the
+game's own frame rate: seen with Smooth Motion on and a window that was never brought to the front.
 
 Seen at 3840x2160 on a 120 Hz display against a 120 fps screen recording: 60 with frame generation off (60 different
-pictures per second in the recording), 120 with it on (120 in the recording).
+pictures per second in the recording), 120 with it on (120 in the recording). On Windows, the same display: the count
+rose by 58 to 61 a second without the driver's layer, full screen and in a window, and by 120 to 122 with Smooth
+Motion on (a desktop duplication of the screen counted up to 121 frames a second in that run).
 
 ### Render resolution
 
